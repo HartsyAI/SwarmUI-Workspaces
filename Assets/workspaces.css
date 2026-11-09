@@ -270,3 +270,26 @@
     min-width: 0;
     overflow-wrap: anywhere;
 }
+
+/* Picker rows with a small picture. */
+.hartsy-workspaces-toolbar .hartsy-workspaces-item-row {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.hartsy-workspaces-thumb {
+    flex: none;
+    width: 2rem;
+    height: 2rem;
+    border-radius: 0.25rem;
+    object-fit: cover;
+}
+
+.hartsy-workspaces-thumb-empty {
+    background-color: color-mix(in srgb, var(--text) 10%, transparent);
+}
+
+.hartsy-workspaces-item-text {
+    min-width: 0;
+}

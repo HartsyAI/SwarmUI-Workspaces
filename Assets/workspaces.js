@@ -72,6 +72,14 @@ class HartsyWorkspacesManager {
         this.maxTagLength = 40;
         /** Text typed in the toolbar's search box, used to filter the dropdown. */
         this.searchText = '';
+        /** Thumbnails as last fetched: map of workspace ID to a small JPEG data URL. Fetched separately from the list. */
+        this.thumbnails = {};
+        /** True once the thumbnails have been fetched from the server. */
+        this.thumbsLoaded = false;
+        /** Side length of a thumbnail, in pixels. */
+        this.thumbnailSize = 96;
+        /** Longest thumbnail data URL the server accepts, in characters. */
+        this.maxThumbChars = 30000;
         /** Function that closes the open partial-load dialog, or null when none is open. */
         this.closeDialogHandler = null;
         /** Pending timer for the debounced draft save, or null. */
@@ -1408,6 +1416,7 @@ class HartsyWorkspacesManager {
             null,
             ['star', 'Bookmark', 'List this workspace first'],
             ['organize', 'Folder and tags...', 'Set this workspace\'s folder and tags'],
+            ['thumbnail', 'Set thumbnail from current image', 'Use the image currently shown in the Generate tab as this workspace\'s picture in the picker'],
             null,
             ['loadpart', 'Load part of a workspace...', 'Load only some parts of a workspace and leave everything else as it is'],
             null,
@@ -1450,6 +1459,7 @@ class HartsyWorkspacesManager {
             rename: () => this.renameCurrent(),
             star: () => this.toggleBookmark(),
             organize: () => this.editOrganization(),
+            thumbnail: () => this.useCurrentImageAsThumbnail(),
             loadpart: () => this.showPartialDialog(),
             export: () => this.exportCurrent(),
             exportall: () => this.exportAll(),
@@ -1524,6 +1534,7 @@ class HartsyWorkspacesManager {
         if (kind == 'picker') {
             this.fillPicker();
             toolbar.querySelector('.hartsy-workspaces-search').focus();
+            this.loadThumbnails();
         }
         else {
             let first = panel.querySelector('.hartsy-workspaces-item:not(:disabled)');
@@ -1607,6 +1618,7 @@ class HartsyWorkspacesManager {
         setDisabled('rename', this.busy || !hasCurrent);
         setDisabled('star', this.busy || !hasCurrent);
         setDisabled('organize', this.busy || !hasCurrent);
+        setDisabled('thumbnail', this.busy || !hasCurrent);
         setDisabled('loadpart', this.busy || !hasAny);
         setDisabled('export', this.busy || !hasCurrent);
         setDisabled('exportall', this.busy || !hasAny);
@@ -1647,20 +1659,39 @@ class HartsyWorkspacesManager {
         list.innerHTML = '';
         let makeItem = (id, name, tags, current) => {
             let item = document.createElement('button');
-            item.className = `hartsy-workspaces-item${current ? ' hartsy-workspaces-item-current' : ''}`;
+            item.className = `hartsy-workspaces-item${current ? ' hartsy-workspaces-item-current' : ''}${id ? ' hartsy-workspaces-item-row' : ''}`;
             item.dataset.id = id;
             item.setAttribute('role', 'option');
             item.setAttribute('aria-selected', current ? 'true' : 'false');
+            if (id) {
+                // A small picture when there is one, otherwise a quiet placeholder so the names stay aligned.
+                let thumb = this.thumbnails[id];
+                if (typeof thumb == 'string' && thumb.startsWith('data:image/jpeg;base64,')) {
+                    let img = document.createElement('img');
+                    img.className = 'hartsy-workspaces-thumb';
+                    img.alt = '';
+                    img.src = thumb;
+                    item.append(img);
+                }
+                else {
+                    let empty = document.createElement('span');
+                    empty.className = 'hartsy-workspaces-thumb hartsy-workspaces-thumb-empty';
+                    item.append(empty);
+                }
+            }
+            let text = document.createElement('span');
+            text.className = 'hartsy-workspaces-item-text';
             let nameElem = document.createElement('span');
             nameElem.className = 'hartsy-workspaces-item-name';
             nameElem.textContent = `${current ? '✓ ' : ''}${name}`;
-            item.append(nameElem);
+            text.append(nameElem);
             if (tags && tags.length > 0) {
                 let tagElem = document.createElement('span');
                 tagElem.className = 'hartsy-workspaces-item-tags';
                 tagElem.textContent = ` #${tags.join(' #')}`;
-                item.append(tagElem);
+                text.append(tagElem);
             }
+            item.append(text);
             return item;
         };
         let addGroup = (label, items) => {
@@ -1771,6 +1802,108 @@ class HartsyWorkspacesManager {
         }
         catch (error) {
             await this.reportFailure('update', error);
+        }
+        finally {
+            this.setBusy(false);
+        }
+    }
+
+    /**
+     * Fetches the thumbnails from the server the first time the picker opens, then redraws the picker. Thumbnails are not part of the workspace list, so listing stays fast.
+     */
+    async loadThumbnails() {
+        if (this.thumbsLoaded) {
+            return;
+        }
+        try {
+            let response = await this.callApi('WorkspacesThumbnails', {});
+            this.thumbnails = response.thumbnails || {};
+            this.thumbsLoaded = true;
+            let panel = document.querySelector('.hartsy-workspaces-picker-panel');
+            if (panel && !panel.hidden) {
+                this.fillPicker();
+            }
+        }
+        catch (error) {
+            console.error('Workspaces: could not load thumbnails.', error);
+        }
+    }
+
+    /**
+     * Makes a small square JPEG from the image currently shown in the Generate tab.
+     * @returns {Promise<string>} A JPEG data URL within the server's size limit, or null if no image is shown, it is a video or audio file, or it cannot be read.
+     */
+    async captureThumbnail() {
+        let src = typeof currentImgSrc != 'undefined' ? currentImgSrc : null;
+        if (!src || typeof src != 'string' || src.startsWith('data:video') || src.startsWith('data:audio') || /\.(mp4|webm|mov|mkv|mp3|wav|ogg|flac|m4a)(\?|#|$)/i.test(src)) {
+            return null;
+        }
+        let img = new Image();
+        let loaded = await new Promise(resolve => {
+            img.onload = () => resolve(true);
+            img.onerror = () => resolve(false);
+            img.src = src;
+        });
+        if (!loaded || !img.naturalWidth || !img.naturalHeight) {
+            return null;
+        }
+        try {
+            let size = this.thumbnailSize;
+            let canvas = document.createElement('canvas');
+            canvas.width = size;
+            canvas.height = size;
+            let scale = Math.max(size / img.naturalWidth, size / img.naturalHeight);
+            let width = img.naturalWidth * scale;
+            let height = img.naturalHeight * scale;
+            canvas.getContext('2d').drawImage(img, (size - width) / 2, (size - height) / 2, width, height);
+            for (let quality of [0.7, 0.5, 0.35]) {
+                let url = canvas.toDataURL('image/jpeg', quality);
+                if (url.length <= this.maxThumbChars) {
+                    return url;
+                }
+            }
+        }
+        catch (error) {
+            console.error('Workspaces: could not make a thumbnail.', error);
+        }
+        return null;
+    }
+
+    /**
+     * Stores a thumbnail for a workspace, or removes it when the data URL is empty. The workspace and its revision are not changed.
+     * @param {string} id The workspace ID.
+     * @param {string} dataUrl The JPEG data URL, or an empty string to remove.
+     */
+    async setThumbnail(id, dataUrl) {
+        await this.callApi('WorkspacesSetThumbnail', { id: id, thumbnail: dataUrl });
+        if (dataUrl) {
+            this.thumbnails[id] = dataUrl;
+        }
+        else {
+            delete this.thumbnails[id];
+        }
+    }
+
+    /**
+     * Uses the image currently shown in the Generate tab as the current workspace's thumbnail.
+     */
+    async useCurrentImageAsThumbnail() {
+        let entry = this.getCurrentEntry();
+        if (this.busy || this.restoring || !entry) {
+            return;
+        }
+        this.setBusy(true);
+        try {
+            let url = await this.captureThumbnail();
+            if (!url) {
+                showError('There is no image to use. Generate an image or open one from the history first.');
+                return;
+            }
+            await this.setThumbnail(entry.id, url);
+            this.setStatus(`Set the thumbnail of "${entry.name}".`);
+        }
+        catch (error) {
+            showError(`Could not set the thumbnail: ${error}`);
         }
         finally {
             this.setBusy(false);
@@ -2040,6 +2173,13 @@ class HartsyWorkspacesManager {
             let response = await this.callApi('WorkspacesCreate', request);
             this.storeEntry(response.workspace);
             this.setCurrent(response.workspace, snapshot);
+            // A new workspace gets the image currently shown as its picture, if there is one. This is a nicety, so failures are only logged.
+            let newId = response.workspace.id;
+            this.captureThumbnail().then(url => {
+                return url ? this.setThumbnail(newId, url) : null;
+            }).catch(thumbError => {
+                console.error('Workspaces: could not store a thumbnail for the new workspace.', thumbError);
+            });
         }
         catch (error) {
             showError(`Could not save the workspace: ${error}`);
@@ -2096,6 +2236,7 @@ class HartsyWorkspacesManager {
         try {
             await this.callApi('WorkspacesDelete', { id: entry.id, revision: this.currentRevision });
             this.workspaces = this.workspaces.filter(w => w.id != entry.id);
+            delete this.thumbnails[entry.id];
             this.detach();
         }
         catch (error) {

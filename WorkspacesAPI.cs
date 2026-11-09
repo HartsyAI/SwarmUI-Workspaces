@@ -216,6 +216,82 @@ public static class WorkspacesAPI
             {
                 return Task.FromResult(saveError);
             }
+            // The workspace is gone, so drop its thumbnail too. Best effort: a leftover thumbnail is harmless, since it is only ever served for existing workspaces.
+            JObject thumbs = WorkspaceStore.LoadThumbs(session.User);
+            if (thumbs.Remove(id))
+            {
+                WorkspaceStore.TrySaveThumbs(session.User, thumbs, out JObject _);
+            }
+            return Task.FromResult(new JObject() { ["success"] = true });
+        }
+    }
+
+    /// <summary>Returns the thumbnails of the user's existing workspaces. Fetched separately from the list so the list stays small.</summary>
+    [API.APIDescription("Returns thumbnails as a map of workspace ID to a small JPEG data URL, only for workspaces that exist.", "\"thumbnails\": { \"abc123\": \"data:image/jpeg;base64,...\" }")]
+    public static Task<JObject> WorkspacesThumbnails(Session session)
+    {
+        lock (WorkspaceStore.GetLock(session.User))
+        {
+            JArray list = WorkspaceStore.Load(session.User);
+            JObject thumbs = WorkspaceStore.LoadThumbs(session.User);
+            JObject result = new();
+            foreach (JToken workspace in list)
+            {
+                string id = workspace["id"]?.ToString();
+                if (id != null && thumbs[id]?.Type == JTokenType.String)
+                {
+                    result[id] = thumbs[id];
+                }
+            }
+            return Task.FromResult(new JObject() { ["thumbnails"] = result });
+        }
+    }
+
+    /// <summary>Sets or removes a workspace's thumbnail. This does not change the workspace or its revision.</summary>
+    [API.APIDescription("Sets or removes a workspace's thumbnail. Send 'id' and 'thumbnail' (a small JPEG data URL), or an empty 'thumbnail' to remove it. The workspace and its revision are not changed.", "\"success\": true")]
+    public static Task<JObject> WorkspacesSetThumbnail(Session session,
+        [API.APIParameter("Raw body: 'id' (string) and 'thumbnail' (JPEG data URL, or empty to remove).")] JObject raw)
+    {
+        string id = raw["id"]?.ToString() ?? "";
+        JToken thumbToken = raw["thumbnail"];
+        if (thumbToken != null && thumbToken.Type != JTokenType.Null && thumbToken.Type != JTokenType.String)
+        {
+            return Task.FromResult(WorkspaceStore.Error("invalid_thumbnail", "'thumbnail' must be a JPEG data URL, or empty to remove it."));
+        }
+        string thumbnail = thumbToken?.Type == JTokenType.String ? thumbToken.ToString() : "";
+        if (thumbnail != "" && !WorkspaceStore.ValidateThumbnail(thumbnail, out JObject thumbError))
+        {
+            return Task.FromResult(thumbError);
+        }
+        lock (WorkspaceStore.GetLock(session.User))
+        {
+            JArray list = WorkspaceStore.Load(session.User);
+            bool exists = false;
+            foreach (JToken workspace in list)
+            {
+                if (workspace["id"]?.ToString() == id)
+                {
+                    exists = true;
+                    break;
+                }
+            }
+            if (!exists)
+            {
+                return Task.FromResult(WorkspaceStore.Error("not_found", "No workspace with that ID exists."));
+            }
+            JObject thumbs = WorkspaceStore.LoadThumbs(session.User);
+            if (thumbnail == "")
+            {
+                thumbs.Remove(id);
+            }
+            else
+            {
+                thumbs[id] = thumbnail;
+            }
+            if (!WorkspaceStore.TrySaveThumbs(session.User, thumbs, out JObject saveError))
+            {
+                return Task.FromResult(saveError);
+            }
             return Task.FromResult(new JObject() { ["success"] = true });
         }
     }
