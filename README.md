@@ -4,7 +4,7 @@ A SwarmUI extension for saving and restoring named workspaces: snapshots of your
 
 ## Status
 
-In development. Working now: the server API (create, update, rename, delete, import), capturing and restoring the Generate tab, and a toolbar above the parameters. Also working: partial load, JSON export and import, folders, tags, search, bookmarks, drafts, and the Shift+S shortcut. Thumbnails are included.
+Early release. Everything described below works. It has been tested by hand in the browser against a SwarmUI dev build; there are no automated tests yet, so please report anything odd.
 
 ## Using it
 
@@ -30,6 +30,27 @@ One row sits above the parameter list on the Generate tab: **[ workspace picker 
 - **Thumbnails**: a new workspace takes the image currently shown in the Generate tab as its small picture in the picker (if there is one), and "Set thumbnail from current image" in the menu replaces it. Thumbnails are 96 px JPEGs of a few KB, stored separately from the workspaces, fetched only when the picker opens, and not included in export files.
 - **Export** downloads a JSON file, and **Import** adds the workspaces from such a file, including folders, tags and bookmarks. The whole file is checked first, and either every workspace is added or none are. Imported workspaces get fresh IDs, and a name that is already taken gets a number added.
 - **Drafts**: while the selected workspace has unsaved changes, a draft of them is kept in your browser a couple of seconds after each change. If you reload the page or close the tab, a notice below the toolbar offers to **Restore** or **Discard** it. Restoring loads the workspace first and then puts the draft on top, so it shows as unsaved changes and never overwrites the saved workspace. Each browser tab keeps its own draft, and a draft from a tab that is still open is never offered.
+
+## What a workspace saves, and what loading does
+
+A workspace saves the Generate tab's parameter values (including values you have configured but switched off), each parameter's own on/off switch, every parameter group's switch (nested groups too), and the active presets in order. Loading replaces all of that; it is not a merge like a preset.
+
+Not saved: image, audio and video inputs (init image, mask, reference images), custom Comfy workflows, prompt attachments, and image editor state. A seed set to random (-1) is saved as -1, so it still picks a new seed each time. A workspace cannot bring back a model or preset that no longer exists.
+
+Loading is careful:
+
+- It checks the whole workspace first, and refuses a workspace from a newer version of this extension.
+- It refuses to load while a custom workflow, init image, mask or the image editor is in use, because loading would leave that state in place. Nothing is changed.
+- If the workspace's model is not available, it refuses and nothing is changed.
+- If a saved preset is missing or has changed since, it asks before continuing.
+- It never reports success when something was skipped: items that could not be restored are listed.
+- If an error happens part-way, it puts your previous settings back. If even that fails, a notice above the parameters says the settings are a mix and should be checked.
+
+## Limits and permissions
+
+- Per user: up to 200 workspaces, each snapshot up to 256 KB, 4 MB of workspaces in total, names up to 100 characters. An import file can be up to 8 MB and hold up to 200 workspaces. Thumbnails have their own 2 MB limit.
+- Listing, saving and deleting workspaces needs the permission "[Workspaces] Manage Workspaces", which regular users have by default.
+- If SwarmUI runs with `--no_persist`, nothing can be saved, and saving says so instead of pretending to work.
 
 ## Installation
 
