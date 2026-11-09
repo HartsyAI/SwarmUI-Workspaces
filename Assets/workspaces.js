@@ -768,7 +768,10 @@ class HartsyWorkspacesManager {
                         item.fromSnapshot = true;
                     }
                     else if (`${entry.value}` == '' && elem.value == '') {
-                        // Saved as empty and still empty now: there is nothing to restore, so it is not a skip.
+                        // Saved as empty and still empty now: there is no value to restore, so it is not a skip. The saved switch state still applies.
+                        item.value = '';
+                        item.enabled = entry.enabled;
+                        item.fromSnapshot = true;
                     }
                     else {
                         plan.skipped.push({ kind: 'value', id: param.id, name: param.name, reason: `"${entry.value}" is not available` });
