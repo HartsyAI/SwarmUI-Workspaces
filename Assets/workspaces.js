@@ -1829,23 +1829,24 @@ class HartsyWorkspacesManager {
         if (selection.presets) {
             merged.presets = JSON.parse(JSON.stringify(source.presets));
         }
-        let names = {};
+        // Walk the real group hierarchy, not just the toggle entries: a chosen group without a toggle of its own can still sit inside a toggle group that is off.
+        let byId = {};
         for (let group of this.listParamGroups().groups) {
-            names[group.id] = group.name;
+            byId[group.id] = group;
         }
         for (let groupId of selection.groups) {
-            if (!merged.groups[groupId] || !merged.groups[groupId].enabled) {
+            if (merged.groups[groupId] && !merged.groups[groupId].enabled) {
                 continue;
             }
-            let parentId = merged.groups[groupId].parent;
+            let parentId = byId[groupId] ? byId[groupId].parentId : null;
             let guard = 0;
-            while (parentId && merged.groups[parentId] && guard++ < 50) {
+            while (parentId && guard++ < 50) {
                 let parent = merged.groups[parentId];
-                if (!parent.enabled && !selection.groups.has(parentId)) {
+                if (parent && !parent.enabled && !selection.groups.has(parentId)) {
                     parent.enabled = true;
-                    notes.push(`"${names[parentId] || parentId}" was switched on, because "${names[groupId] || groupId}" is inside it.`);
+                    notes.push(`"${byId[parentId] ? byId[parentId].name : parentId}" was switched on, because "${byId[groupId] ? byId[groupId].name : groupId}" is inside it.`);
                 }
-                parentId = parent.parent;
+                parentId = byId[parentId] ? byId[parentId].parentId : null;
             }
         }
         return { snapshot: merged, notes: notes };
@@ -2147,14 +2148,25 @@ class HartsyWorkspacesManager {
         }
         this.setBusy(true);
         try {
-            await this.listWorkspaces();
-            this.makeNamesUnique(parsed.entries);
-            let response = await this.callApi('WorkspacesImport', { workspaces: parsed.entries });
-            await this.listWorkspaces();
-            this.setStatus(`Imported ${response.imported} ${response.imported == 1 ? 'workspace' : 'workspaces'}.`);
-        }
-        catch (error) {
-            showError(`Nothing was imported: ${error}`);
+            let response;
+            try {
+                await this.listWorkspaces();
+                this.makeNamesUnique(parsed.entries);
+                response = await this.callApi('WorkspacesImport', { workspaces: parsed.entries });
+            }
+            catch (error) {
+                showError(`Nothing was imported: ${error}`);
+                return;
+            }
+            let summary = `Imported ${response.imported} ${response.imported == 1 ? 'workspace' : 'workspaces'}.`;
+            this.setStatus(summary);
+            try {
+                await this.listWorkspaces();
+            }
+            catch (error) {
+                // The server already stored everything, so say so: importing the file again would add a second copy.
+                showError(`${summary} The list could not be refreshed (${error}). Reload the page to see them, and do not import the file again.`);
+            }
         }
         finally {
             this.setBusy(false);
