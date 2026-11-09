@@ -740,7 +740,10 @@ class HartsyWorkspacesManager {
                     let kept = [];
                     let list = this.toList(entry.value);
                     for (let i = 0; i < list.length; i++) {
-                        if (options.includes(list[i])) {
+                        if (`${list[i]}` == '') {
+                            // An empty entry means "no items", so there is nothing to keep or report.
+                        }
+                        else if (options.includes(list[i])) {
                             kept.push(list[i]);
                         }
                         else {
@@ -761,6 +764,12 @@ class HartsyWorkspacesManager {
                     }
                     if (options.includes(`${entry.value}`)) {
                         item.value = `${entry.value}`;
+                        item.enabled = entry.enabled;
+                        item.fromSnapshot = true;
+                    }
+                    else if (`${entry.value}` == '' && elem.value == '') {
+                        // Saved as empty and still empty now: there is no value to restore, so it is not a skip. The saved switch state still applies.
+                        item.value = '';
                         item.enabled = entry.enabled;
                         item.fromSnapshot = true;
                     }
@@ -935,7 +944,9 @@ class HartsyWorkspacesManager {
     findDrift(plan) {
         let drift = { values: [], toggles: [], groups: [] };
         for (let item of plan.values) {
-            if (!this.valuesEqual(item.param, this.readParamValue(item.param, item.elem), item.value)) {
+            // A select with no options cannot hold any value, so it cannot drift from its default.
+            let optionless = item.elem && item.elem.tagName == 'SELECT' && item.elem.options.length == 0;
+            if (!optionless && !this.valuesEqual(item.param, this.readParamValue(item.param, item.elem), item.value)) {
                 drift.values.push(item);
             }
             if (item.param.toggleable && this.isParamToggleOn(item.param) != item.enabled) {
