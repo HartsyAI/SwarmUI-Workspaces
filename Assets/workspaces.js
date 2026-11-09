@@ -1571,12 +1571,12 @@ class HartsyWorkspacesManager {
      * Loads a stored workspace into the Generate tab, replacing the current settings.
      * Asks first if the current workspace has unsaved changes. The modified baseline moves only if the load succeeds.
      * @param {string} id The workspace ID.
-     * @returns {Promise<boolean>} True only if the workspace was loaded (fully, or with skipped items reported). False if it was refused, cancelled, or failed.
+     * @returns {Promise<string>} 'loaded' if the workspace was loaded (fully, or with skipped items reported); 'cancelled' if the user declined or nothing was attempted; 'failed' if it was refused or the load failed (the reason has been shown to the user).
      */
     async loadWorkspace(id) {
         if (this.busy || this.restoring) {
             this.refreshToolbar();
-            return false;
+            return 'cancelled';
         }
         // The marker is debounced, so compare right now instead of trusting it: an edit made a moment ago must still trigger the prompt.
         this.updateModified();
@@ -1586,7 +1586,7 @@ class HartsyWorkspacesManager {
             let question = id == this.currentId ? `"${name}" has unsaved changes. Reload the saved version and discard them?` : `"${name}" has unsaved changes. Load another workspace and discard them?`;
             if (!confirm(question)) {
                 this.refreshToolbar();
-                return false;
+                return 'cancelled';
             }
         }
         this.setBusy(true);
@@ -1603,14 +1603,14 @@ class HartsyWorkspacesManager {
                 if (this.currentId == id) {
                     this.detach();
                 }
-                return false;
+                return 'failed';
             }
             let result = await this.applySnapshot(entry);
             if (result.status == 'success' || result.status == 'incomplete') {
                 this.setCurrent(entry);
-                return true;
+                return 'loaded';
             }
-            return false;
+            return result.status == 'cancelled' ? 'cancelled' : 'failed';
         }
         finally {
             this.setBusy(false);
@@ -2557,6 +2557,8 @@ class HartsyWorkspacesManager {
         // Still no room. Put the original back as it was, and keep the draft in memory so the notice can still offer it on this page.
         this.storageSet(ownKey, text);
         record.key = null;
+        // Remember the entry that still backs this draft, so Discard removes it too (unless a newer live draft has since replaced it).
+        record.backingKey = ownKey;
         this.heldDrafts.push(record);
     }
 
@@ -2567,6 +2569,19 @@ class HartsyWorkspacesManager {
     discardDraft(draft) {
         if (draft.key) {
             this.storageRemove(draft.key);
+        }
+        if (draft.backingKey) {
+            // Only remove the entry if it still holds this same draft, not a newer live draft written since.
+            let current = null;
+            try {
+                current = JSON.parse(this.storageGet(draft.backingKey));
+            }
+            catch (error) {
+                current = null;
+            }
+            if (this.isPlainObject(current) && current.savedAt == draft.savedAt) {
+                this.storageRemove(draft.backingKey);
+            }
         }
         this.heldDrafts = this.heldDrafts.filter(d => d != draft);
     }
@@ -2638,10 +2653,22 @@ class HartsyWorkspacesManager {
         }
         let entry = draft.workspaceId ? this.workspaces.find(w => w.id == draft.workspaceId) : null;
         // The stored draft is a separate copy (see relocateOwnDraft), so loading, saving, and the modified tracking below can never clear it. It is removed only after the draft itself is applied.
+        let attached = false;
         if (entry) {
-            if (!await this.loadWorkspace(entry.id)) {
-                // The load was refused, cancelled, or failed; the draft stays so it can be recovered later.
+            let outcome = await this.loadWorkspace(entry.id);
+            if (outcome == 'cancelled') {
+                // The user declined, or nothing was attempted; the draft stays so it can be recovered later.
                 return;
+            }
+            if (outcome == 'failed') {
+                // The saved version cannot be loaded (for example its model was removed), but the draft may still be usable. Offer it without attaching it to the workspace.
+                if (!confirm(`The saved workspace "${entry.name}" could not be loaded (the reason was shown above). Restore the draft anyway, without attaching it to a workspace?`)) {
+                    return;
+                }
+                this.detach();
+            }
+            else {
+                attached = true;
             }
         }
         else {
@@ -2665,9 +2692,9 @@ class HartsyWorkspacesManager {
         }
         this.discardDraft(draft);
         // loadWorkspace refreshed the list, so compare with the entry and revision that were actually loaded, not the cached one from before.
-        let loaded = entry ? this.getCurrentEntry() : null;
-        if (!entry) {
-            this.setStatus('Restored the draft. Its workspace no longer exists, so these settings are not attached to one. Use Save As to keep them.');
+        let loaded = attached ? this.getCurrentEntry() : null;
+        if (!attached) {
+            this.setStatus(entry ? 'Restored the draft. The saved workspace could not be loaded, so these settings are not attached to it. Use Save As to keep them.' : 'Restored the draft. Its workspace no longer exists, so these settings are not attached to one. Use Save As to keep them.');
         }
         else if (loaded && this.currentRevision != draft.revision) {
             this.setStatus(`Restored the draft. "${loaded.name}" was saved elsewhere after this draft was made, so saving now replaces that newer version.`);
