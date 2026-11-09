@@ -40,6 +40,20 @@ class HartsyWorkspacesManager {
         this.excludedParamIds = ['comfyworkflowraw', 'comfyworkflowparammetadata', 'comfyuicustomworkflow'];
         /** Parameter types never captured or restored: media inputs (setDirectParamValue cannot restore raw image data). */
         this.mediaParamTypes = ['image', 'audio', 'video', 'image_list', 'audio_list', 'video_list'];
+        /** ID of the workspace the Generate tab was last loaded from or saved to, or null when none is selected. */
+        this.currentId = null;
+        /** Server revision of the current workspace, sent back with every update, rename, and delete. */
+        this.currentRevision = null;
+        /** Normalized state of the Generate tab as of the last successful load or save, or null when no workspace is selected. */
+        this.baseline = null;
+        /** True when the Generate tab differs from the baseline. */
+        this.modified = false;
+        /** True while a save, rename, delete, or load started from the toolbar is running. */
+        this.busy = false;
+        /** Pending timer for the debounced modified-state check, or null. */
+        this.modifiedTimer = null;
+        /** True once the page-wide change listeners are attached. */
+        this.trackingAttached = false;
         /** Readable names for the unsupported-state IDs stored in a snapshot's 'unsupported' list. */
         this.unsupportedLabels = {
             custom_workflow: 'a custom Comfy workflow',
@@ -68,7 +82,9 @@ class HartsyWorkspacesManager {
      * Loads the workspace list when the page session is ready. Shows an error if the request fails.
      */
     loadWorkspaces() {
-        this.listWorkspaces().catch(error => {
+        this.listWorkspaces().then(() => {
+            this.refreshToolbar();
+        }).catch(error => {
             console.error('Workspaces: failed to load the workspace list.', error);
             showError(`Failed to load workspaces: ${error}`);
         });
@@ -1271,11 +1287,506 @@ class HartsyWorkspacesManager {
             banner.remove();
         }
     }
+
+    /**
+     * Calls a Workspaces API route.
+     * @param {string} route The route name, for example 'WorkspacesCreate'.
+     * @param {Object} data The request body.
+     * @returns {Promise<Object>} Resolves to the response; rejects with the error message.
+     */
+    callApi(route, data) {
+        return new Promise((resolve, reject) => {
+            genericRequest(route, data, response => {
+                resolve(response);
+            }, 0, error => {
+                reject(`${error}`);
+            });
+        });
+    }
+
+    /**
+     * Reduces a snapshot to the parts that count for modified-state comparison. Timestamps, revision, name, and thumbnails are left out. List order is kept.
+     * @param {Object} snapshot A captured snapshot.
+     * @returns {string} Stable text for comparing two states.
+     */
+    normalizeState(snapshot) {
+        return this.stableStringify({ values: snapshot.values, groups: snapshot.groups, presets: snapshot.presets, unsupported: snapshot.unsupported });
+    }
+
+    /**
+     * Makes sure exactly one toolbar sits directly above the parameter area, and refreshes it.
+     * Safe to call any number of times, including after every parameter rebuild.
+     * @returns {Element|null} The toolbar, or null if the Generate tab is not on the page yet.
+     */
+    ensureToolbar() {
+        let area = document.getElementById('main_inputs_area');
+        if (!area || !area.parentElement) {
+            return null;
+        }
+        let toolbars = area.parentElement.querySelectorAll('.hartsy-workspaces-toolbar');
+        let toolbar = toolbars.length > 0 ? toolbars[0] : null;
+        for (let i = 1; i < toolbars.length; i++) {
+            toolbars[i].remove();
+        }
+        if (!toolbar) {
+            toolbar = createDiv(null, 'hartsy-workspaces-toolbar');
+            toolbar.innerHTML = '<select class="hartsy-workspaces-select" title="Load a saved workspace"></select>'
+                + '<button class="basic-button hartsy-workspaces-new" title="Save the current settings as a new workspace">New</button>'
+                + '<button class="basic-button hartsy-workspaces-save" title="Save the current settings to this workspace">Save</button>'
+                + '<button class="basic-button hartsy-workspaces-saveas" title="Save the current settings as a copy">Save As</button>'
+                + '<button class="basic-button hartsy-workspaces-reload" title="Throw away unsaved changes and load the latest saved version of this workspace">Reload</button>'
+                + '<button class="basic-button hartsy-workspaces-rename" title="Rename this workspace">Rename</button>'
+                + '<button class="basic-button hartsy-workspaces-delete" title="Delete this workspace">Delete</button>'
+                + '<span class="hartsy-workspaces-modified" title="The settings differ from the saved workspace" hidden>● Modified</span>';
+            toolbar.querySelector('.hartsy-workspaces-select').addEventListener('change', event => {
+                this.onSelectChange(event.target);
+            });
+            toolbar.querySelector('.hartsy-workspaces-new').addEventListener('click', () => {
+                this.saveNew(false);
+            });
+            toolbar.querySelector('.hartsy-workspaces-save').addEventListener('click', () => {
+                this.saveCurrent();
+            });
+            toolbar.querySelector('.hartsy-workspaces-saveas').addEventListener('click', () => {
+                this.saveNew(true);
+            });
+            toolbar.querySelector('.hartsy-workspaces-reload').addEventListener('click', () => {
+                if (this.currentId) {
+                    this.loadWorkspace(this.currentId);
+                }
+            });
+            toolbar.querySelector('.hartsy-workspaces-rename').addEventListener('click', () => {
+                this.renameCurrent();
+            });
+            toolbar.querySelector('.hartsy-workspaces-delete').addEventListener('click', () => {
+                this.deleteCurrent();
+            });
+        }
+        if (toolbar.nextElementSibling != area) {
+            area.parentElement.insertBefore(toolbar, area);
+        }
+        this.attachTracking();
+        this.refreshToolbar();
+        return toolbar;
+    }
+
+    /**
+     * Redraws the toolbar's dropdown, button states, and modified marker from the current state.
+     */
+    refreshToolbar() {
+        let toolbar = document.querySelector('.hartsy-workspaces-toolbar');
+        if (!toolbar) {
+            return;
+        }
+        let select = toolbar.querySelector('.hartsy-workspaces-select');
+        let sorted = this.workspaces.slice().sort((a, b) => `${a.name}`.localeCompare(`${b.name}`));
+        select.innerHTML = '';
+        let none = document.createElement('option');
+        none.value = '';
+        none.textContent = '(no workspace)';
+        select.append(none);
+        for (let workspace of sorted) {
+            let option = document.createElement('option');
+            option.value = workspace.id;
+            option.textContent = workspace.name;
+            select.append(option);
+        }
+        select.value = this.currentId && this.workspaces.some(w => w.id == this.currentId) ? this.currentId : '';
+        let hasCurrent = select.value != '';
+        select.disabled = this.busy;
+        toolbar.querySelector('.hartsy-workspaces-new').disabled = this.busy;
+        toolbar.querySelector('.hartsy-workspaces-save').disabled = this.busy;
+        toolbar.querySelector('.hartsy-workspaces-saveas').disabled = this.busy;
+        toolbar.querySelector('.hartsy-workspaces-reload').disabled = this.busy || !hasCurrent;
+        toolbar.querySelector('.hartsy-workspaces-rename').disabled = this.busy || !hasCurrent;
+        toolbar.querySelector('.hartsy-workspaces-delete').disabled = this.busy || !hasCurrent;
+        toolbar.querySelector('.hartsy-workspaces-modified').hidden = !(hasCurrent && this.modified);
+    }
+
+    /**
+     * Sets or clears the busy flag, which disables the toolbar while a request or a load runs.
+     * @param {boolean} busy True while an operation runs.
+     */
+    setBusy(busy) {
+        this.busy = busy;
+        this.refreshToolbar();
+        if (!busy) {
+            this.scheduleModifiedCheck();
+        }
+    }
+
+    /**
+     * Finds the stored workspace the toolbar is currently attached to.
+     * @returns {Object|null} The workspace entry, or null.
+     */
+    getCurrentEntry() {
+        if (!this.currentId) {
+            return null;
+        }
+        return this.workspaces.find(w => w.id == this.currentId) || null;
+    }
+
+    /**
+     * Makes a workspace the current one and resets the modified baseline to the given (or present) state.
+     * Call only when the Generate tab really holds that workspace: after a successful load or save.
+     * @param {Object} entry The stored workspace entry (with its new revision).
+     * @param {Object} snapshot Optional: the snapshot that was saved, used as the baseline instead of re-capturing.
+     */
+    setCurrent(entry, snapshot = null) {
+        this.currentId = entry.id;
+        this.currentRevision = entry.revision;
+        this.baseline = this.normalizeState(snapshot || this.captureSnapshot());
+        this.modified = false;
+        this.refreshToolbar();
+    }
+
+    /**
+     * Detaches the toolbar from any workspace. The Generate tab keeps its settings.
+     */
+    detach() {
+        this.currentId = null;
+        this.currentRevision = null;
+        this.baseline = null;
+        this.modified = false;
+        this.refreshToolbar();
+    }
+
+    /**
+     * Stores a workspace entry returned by the server into the cached list, replacing an entry with the same ID.
+     * @param {Object} entry The workspace entry.
+     */
+    storeEntry(entry) {
+        let index = this.workspaces.findIndex(w => w.id == entry.id);
+        if (index >= 0) {
+            this.workspaces[index] = entry;
+        }
+        else {
+            this.workspaces.push(entry);
+        }
+    }
+
+    /**
+     * Handles a choice in the toolbar dropdown: loads that workspace, or detaches when "(no workspace)" is chosen.
+     * @param {HTMLSelectElement} select The dropdown.
+     */
+    async onSelectChange(select) {
+        let id = select.value;
+        if (id == (this.currentId || '')) {
+            return;
+        }
+        if (id == '') {
+            this.detach();
+            return;
+        }
+        await this.loadWorkspace(id);
+    }
+
+    /**
+     * Loads a stored workspace into the Generate tab, replacing the current settings.
+     * Asks first if the current workspace has unsaved changes. The modified baseline moves only if the load succeeds.
+     * @param {string} id The workspace ID.
+     */
+    async loadWorkspace(id) {
+        if (this.busy || this.restoring) {
+            this.refreshToolbar();
+            return;
+        }
+        // The marker is debounced, so compare right now instead of trusting it: an edit made a moment ago must still trigger the prompt.
+        this.updateModified();
+        if (this.modified) {
+            let current = this.getCurrentEntry();
+            let name = current ? current.name : 'The current workspace';
+            let question = id == this.currentId ? `"${name}" has unsaved changes. Reload the saved version and discard them?` : `"${name}" has unsaved changes. Load another workspace and discard them?`;
+            if (!confirm(question)) {
+                this.refreshToolbar();
+                return;
+            }
+        }
+        this.setBusy(true);
+        try {
+            try {
+                await this.listWorkspaces();
+            }
+            catch (error) {
+                console.error('Workspaces: could not refresh the list before loading; using the cached list.', error);
+            }
+            let entry = this.workspaces.find(w => w.id == id);
+            if (!entry) {
+                showError('That workspace no longer exists. The list was refreshed.');
+                if (this.currentId == id) {
+                    this.detach();
+                }
+                return;
+            }
+            let result = await this.applySnapshot(entry);
+            if (result.status == 'success' || result.status == 'incomplete') {
+                this.setCurrent(entry);
+            }
+        }
+        finally {
+            this.setBusy(false);
+        }
+    }
+
+    /**
+     * Saves the current settings into the current workspace. With no workspace selected, saves a new one instead.
+     * A failed save keeps the modified marker and tells the user why, including when the workspace changed elsewhere.
+     */
+    async saveCurrent() {
+        if (this.busy || this.restoring) {
+            return;
+        }
+        if (!this.currentId) {
+            await this.saveNew(false);
+            return;
+        }
+        let entry = this.getCurrentEntry();
+        if (!entry) {
+            this.detach();
+            showError('This workspace no longer exists. Use Save As to keep your settings as a new workspace.');
+            return;
+        }
+        let snapshot;
+        try {
+            snapshot = this.captureSnapshot();
+        }
+        catch (error) {
+            showError(`Could not read the current settings: ${error.message || error}`);
+            return;
+        }
+        this.setBusy(true);
+        try {
+            let response = await this.callApi('WorkspacesUpdate', { id: this.currentId, revision: this.currentRevision, name: entry.name, snapshot: snapshot });
+            this.storeEntry(response.workspace);
+            this.setCurrent(response.workspace, snapshot);
+        }
+        catch (error) {
+            await this.reportFailure('save', error);
+        }
+        finally {
+            this.setBusy(false);
+        }
+    }
+
+    /**
+     * Saves the current settings as a new workspace and selects it.
+     * @param {boolean} copy True for Save As: the name prompt starts as "<current name> copy".
+     */
+    async saveNew(copy) {
+        if (this.busy || this.restoring) {
+            return;
+        }
+        let current = this.getCurrentEntry();
+        let name = prompt('Name for the new workspace:', copy && current ? `${current.name} copy` : '');
+        if (name == null) {
+            return;
+        }
+        name = name.trim();
+        if (name == '') {
+            showError('A workspace needs a name.');
+            return;
+        }
+        let snapshot;
+        try {
+            snapshot = this.captureSnapshot();
+        }
+        catch (error) {
+            showError(`Could not read the current settings: ${error.message || error}`);
+            return;
+        }
+        this.setBusy(true);
+        try {
+            let response = await this.callApi('WorkspacesCreate', { name: name, snapshot: snapshot });
+            this.storeEntry(response.workspace);
+            this.setCurrent(response.workspace, snapshot);
+        }
+        catch (error) {
+            showError(`Could not save the workspace: ${error}`);
+        }
+        finally {
+            this.setBusy(false);
+        }
+    }
+
+    /**
+     * Renames the current workspace. The saved settings are not touched, and unsaved changes stay unsaved.
+     */
+    async renameCurrent() {
+        let entry = this.getCurrentEntry();
+        if (this.busy || this.restoring || !entry) {
+            return;
+        }
+        let name = prompt('New name for this workspace:', entry.name);
+        if (name == null) {
+            return;
+        }
+        name = name.trim();
+        if (name == '') {
+            showError('A workspace needs a name.');
+            return;
+        }
+        this.setBusy(true);
+        try {
+            let response = await this.callApi('WorkspacesRename', { id: entry.id, revision: this.currentRevision, name: name });
+            entry.name = name;
+            entry.revision = response.revision;
+            this.currentRevision = response.revision;
+        }
+        catch (error) {
+            await this.reportFailure('rename', error);
+        }
+        finally {
+            this.setBusy(false);
+        }
+    }
+
+    /**
+     * Deletes the current workspace after confirmation. The Generate tab keeps its settings.
+     */
+    async deleteCurrent() {
+        let entry = this.getCurrentEntry();
+        if (this.busy || this.restoring || !entry) {
+            return;
+        }
+        if (!confirm(`Delete the workspace "${entry.name}"? This cannot be undone. Your current settings stay as they are.`)) {
+            return;
+        }
+        this.setBusy(true);
+        try {
+            await this.callApi('WorkspacesDelete', { id: entry.id, revision: this.currentRevision });
+            this.workspaces = this.workspaces.filter(w => w.id != entry.id);
+            this.detach();
+        }
+        catch (error) {
+            await this.reportFailure('delete', error);
+        }
+        finally {
+            this.setBusy(false);
+        }
+    }
+
+    /**
+     * Tells the user a save, rename, or delete failed. Re-reads the list to explain a conflict: the workspace changed or was deleted elsewhere.
+     * Never clears the modified marker.
+     * @param {string} verb What was attempted: 'save', 'rename', or 'delete'.
+     * @param {string} error The error message from the server.
+     */
+    async reportFailure(verb, error) {
+        let message = `${error}`;
+        try {
+            await this.listWorkspaces();
+            let entry = this.getCurrentEntry();
+            if (!entry) {
+                message = 'This workspace was deleted elsewhere. Use Save As to keep your settings as a new workspace.';
+                this.currentId = null;
+                this.currentRevision = null;
+                this.baseline = null;
+                this.modified = false;
+            }
+            else if (entry.revision != this.currentRevision) {
+                message = `"${entry.name}" was changed elsewhere. Nothing was overwritten. Use Save As to keep your settings as a new workspace, or load the workspace again to get the latest version.`;
+            }
+        }
+        catch (listError) {
+            console.error('Workspaces: could not re-read the list after a failure.', listError);
+        }
+        showError(`Could not ${verb} the workspace: ${message}`);
+    }
+
+    /**
+     * Attaches the page-wide listeners that notice parameter changes. Safe to call repeatedly.
+     * Listeners are capturing, because Swarm's programmatic change events do not bubble, and on the document, so they survive parameter rebuilds.
+     */
+    attachTracking() {
+        if (this.trackingAttached) {
+            return;
+        }
+        this.trackingAttached = true;
+        for (let type of ['input', 'change', 'click']) {
+            document.addEventListener(type, event => {
+                this.onPossibleChange(event);
+            }, true);
+        }
+    }
+
+    /**
+     * Handles any input, change, or click on the page by scheduling a modified-state check.
+     * @param {Event} event The event.
+     */
+    onPossibleChange(event) {
+        if (!this.currentId || this.restoring || this.busy) {
+            return;
+        }
+        if (event.target && event.target.closest && event.target.closest('.hartsy-workspaces-toolbar')) {
+            return;
+        }
+        this.scheduleModifiedCheck();
+    }
+
+    /**
+     * Schedules a debounced modified-state check. Does nothing when no workspace is selected.
+     */
+    scheduleModifiedCheck() {
+        if (!this.currentId) {
+            return;
+        }
+        if (this.modifiedTimer) {
+            clearTimeout(this.modifiedTimer);
+        }
+        this.modifiedTimer = setTimeout(() => {
+            this.modifiedTimer = null;
+            this.updateModified();
+        }, 250);
+    }
+
+    /**
+     * Compares the Generate tab with the baseline and updates the modified marker. Idle during restores and saves.
+     */
+    updateModified() {
+        if (!this.currentId || this.baseline == null || this.restoring || this.busy || !this.isReady()) {
+            return;
+        }
+        let state;
+        try {
+            state = this.normalizeState(this.captureSnapshot());
+        }
+        catch (error) {
+            console.error('Workspaces: could not read the current settings.', error);
+            return;
+        }
+        let changed = state != this.baseline;
+        if (changed != this.modified) {
+            this.modified = changed;
+            this.refreshToolbar();
+        }
+    }
+
+    /**
+     * Runs after every parameter build: puts the toolbar back if needed and re-checks the modified state.
+     */
+    onParamsBuilt() {
+        try {
+            this.ensureToolbar();
+            this.scheduleModifiedCheck();
+        }
+        catch (error) {
+            console.error('Workspaces: could not set up the toolbar.', error);
+        }
+    }
 }
 
 /** Singleton instance of the workspace manager. */
 let hartsyWorkspacesManager = new HartsyWorkspacesManager();
 
+if (typeof postParamBuildSteps != 'undefined') {
+    postParamBuildSteps.push(() => {
+        hartsyWorkspacesManager.onParamsBuilt();
+    });
+}
+
 sessionReadyCallbacks.push(() => {
     hartsyWorkspacesManager.loadWorkspaces();
+    if (hartsyWorkspacesManager.isReady()) {
+        hartsyWorkspacesManager.ensureToolbar();
+    }
 });
