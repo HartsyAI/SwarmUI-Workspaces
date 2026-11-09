@@ -1484,6 +1484,8 @@ class HartsyWorkspacesManager {
             this.refreshToolbar();
             return;
         }
+        // The marker is debounced, so compare right now instead of trusting it: an edit made a moment ago must still trigger the prompt.
+        this.updateModified();
         if (this.modified) {
             let current = this.getCurrentEntry();
             if (!confirm(`"${current ? current.name : 'The current workspace'}" has unsaved changes. Load another workspace and discard them?`)) {
