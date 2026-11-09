@@ -54,6 +54,18 @@ class HartsyWorkspacesManager {
         this.modifiedTimer = null;
         /** True once the page-wide change listeners are attached. */
         this.trackingAttached = false;
+        /** Pending timer that clears the toolbar's status text, or null. */
+        this.statusTimer = null;
+        /** Value of the 'format' field in exported files. */
+        this.exportFormat = 'swarmui-workspaces';
+        /** Largest import file accepted, in bytes. */
+        this.maxImportBytes = 8 * 1024 * 1024;
+        /** Most workspaces one import may hold. Matches the server's limit. */
+        this.maxImportCount = 200;
+        /** Longest workspace name, in characters. Matches the server's limit. */
+        this.maxNameLength = 100;
+        /** Function that closes the open partial-load dialog, or null when none is open. */
+        this.closeDialogHandler = null;
         /** Readable names for the unsupported-state IDs stored in a snapshot's 'unsupported' list. */
         this.unsupportedLabels = {
             custom_workflow: 'a custom Comfy workflow',
@@ -1337,7 +1349,25 @@ class HartsyWorkspacesManager {
                 + '<button class="basic-button hartsy-workspaces-reload" title="Throw away unsaved changes and load the latest saved version of this workspace">Reload</button>'
                 + '<button class="basic-button hartsy-workspaces-rename" title="Rename this workspace">Rename</button>'
                 + '<button class="basic-button hartsy-workspaces-delete" title="Delete this workspace">Delete</button>'
-                + '<span class="hartsy-workspaces-modified" title="The settings differ from the saved workspace" hidden>● Modified</span>';
+                + '<span class="hartsy-workspaces-modified" title="The settings differ from the saved workspace" hidden>● Modified</span>'
+                + '<span class="hartsy-workspaces-break"></span>'
+                + '<button class="basic-button hartsy-workspaces-loadpart" title="Load only some parts of a workspace, and leave everything else as it is">Load Part...</button>'
+                + '<button class="basic-button hartsy-workspaces-export" title="Download the saved version of this workspace as a JSON file">Export</button>'
+                + '<button class="basic-button hartsy-workspaces-exportall" title="Download every workspace as one JSON file">Export All</button>'
+                + '<button class="basic-button hartsy-workspaces-import" title="Add workspaces from a JSON file">Import</button>'
+                + '<span class="hartsy-workspaces-status" role="status"></span>';
+            toolbar.querySelector('.hartsy-workspaces-loadpart').addEventListener('click', () => {
+                this.showPartialDialog();
+            });
+            toolbar.querySelector('.hartsy-workspaces-export').addEventListener('click', () => {
+                this.exportCurrent();
+            });
+            toolbar.querySelector('.hartsy-workspaces-exportall').addEventListener('click', () => {
+                this.exportAll();
+            });
+            toolbar.querySelector('.hartsy-workspaces-import').addEventListener('click', () => {
+                this.pickImportFile();
+            });
             toolbar.querySelector('.hartsy-workspaces-select').addEventListener('change', event => {
                 this.onSelectChange(event.target);
             });
@@ -1401,6 +1431,29 @@ class HartsyWorkspacesManager {
         toolbar.querySelector('.hartsy-workspaces-rename').disabled = this.busy || !hasCurrent;
         toolbar.querySelector('.hartsy-workspaces-delete').disabled = this.busy || !hasCurrent;
         toolbar.querySelector('.hartsy-workspaces-modified').hidden = !(hasCurrent && this.modified);
+        toolbar.querySelector('.hartsy-workspaces-loadpart').disabled = this.busy || this.workspaces.length == 0;
+        toolbar.querySelector('.hartsy-workspaces-export').disabled = this.busy || !hasCurrent;
+        toolbar.querySelector('.hartsy-workspaces-exportall').disabled = this.busy || this.workspaces.length == 0;
+        toolbar.querySelector('.hartsy-workspaces-import').disabled = this.busy;
+    }
+
+    /**
+     * Shows a short status line in the toolbar, which clears itself after a few seconds.
+     * @param {string} text The message.
+     */
+    setStatus(text) {
+        let status = document.querySelector('.hartsy-workspaces-status');
+        if (!status) {
+            return;
+        }
+        status.textContent = text;
+        if (this.statusTimer) {
+            clearTimeout(this.statusTimer);
+        }
+        this.statusTimer = setTimeout(() => {
+            this.statusTimer = null;
+            status.textContent = '';
+        }, 8000);
     }
 
     /**
@@ -1691,6 +1744,500 @@ class HartsyWorkspacesManager {
             console.error('Workspaces: could not re-read the list after a failure.', listError);
         }
         showError(`Could not ${verb} the workspace: ${message}`);
+    }
+
+    /**
+     * Lists the parameter groups in the UI for the partial-load dialog, parents before their children, plus whether any parameters have no group.
+     * @returns {Object} { groups: [{ id, name, parentId, depth }], hasOther }.
+     */
+    listParamGroups() {
+        let found = {};
+        let groups = [];
+        let hasOther = false;
+        for (let param of gen_param_types) {
+            if (!this.isCapturableParam(param) || param.id == 'model') {
+                continue;
+            }
+            if (!param.group || typeof param.group != 'object') {
+                hasOther = true;
+                continue;
+            }
+            let chain = [];
+            let group = param.group;
+            while (group && typeof group == 'object') {
+                chain.push(group);
+                group = group.parent;
+            }
+            for (let item of chain.reverse()) {
+                if (!found[item.id]) {
+                    found[item.id] = true;
+                    groups.push({ id: item.id, name: item.name || item.id, parentId: this.getParentGroupId(item), depth: this.getGroupDepth(item) });
+                }
+            }
+        }
+        let ordered = [];
+        let addWithChildren = group => {
+            ordered.push(group);
+            for (let child of groups) {
+                if (child.parentId == group.id) {
+                    addWithChildren(child);
+                }
+            }
+        };
+        for (let group of groups) {
+            if (!group.parentId || !found[group.parentId]) {
+                addWithChildren(group);
+            }
+        }
+        return { groups: ordered, hasOther: hasOther };
+    }
+
+    /**
+     * Builds the snapshot for a partial load: the current Generate-tab state, with only the chosen parts taken from the workspace.
+     * Loading the result with applySnapshot changes just the chosen parts. If a chosen group is switched on inside a parent group that is off and not chosen, the parent is switched on too, and a note says so.
+     * @param {Object} source The stored workspace to load from.
+     * @param {Object} selection { model, presets, other, groups: Set of group IDs }.
+     * @returns {Object} { snapshot, notes }: the merged snapshot and readable notes about extra changes.
+     */
+    buildPartialSnapshot(source, selection) {
+        let current = this.captureSnapshot();
+        let merged = { schemaVersion: current.schemaVersion, values: current.values, groups: current.groups, presets: current.presets, unsupported: source.unsupported.slice() };
+        let notes = [];
+        for (let param of gen_param_types) {
+            if (!this.isCapturableParam(param) || !source.values[param.id]) {
+                continue;
+            }
+            let chosen;
+            if (param.id == 'model') {
+                chosen = selection.model;
+            }
+            else if (param.group && typeof param.group == 'object') {
+                chosen = selection.groups.has(param.group.id);
+            }
+            else {
+                chosen = selection.other;
+            }
+            if (chosen) {
+                merged.values[param.id] = JSON.parse(JSON.stringify(source.values[param.id]));
+            }
+        }
+        for (let groupId of selection.groups) {
+            if (source.groups[groupId] && merged.groups[groupId]) {
+                merged.groups[groupId].enabled = source.groups[groupId].enabled;
+            }
+        }
+        if (selection.presets) {
+            merged.presets = JSON.parse(JSON.stringify(source.presets));
+        }
+        let names = {};
+        for (let group of this.listParamGroups().groups) {
+            names[group.id] = group.name;
+        }
+        for (let groupId of selection.groups) {
+            if (!merged.groups[groupId] || !merged.groups[groupId].enabled) {
+                continue;
+            }
+            let parentId = merged.groups[groupId].parent;
+            let guard = 0;
+            while (parentId && merged.groups[parentId] && guard++ < 50) {
+                let parent = merged.groups[parentId];
+                if (!parent.enabled && !selection.groups.has(parentId)) {
+                    parent.enabled = true;
+                    notes.push(`"${names[parentId] || parentId}" was switched on, because "${names[groupId] || groupId}" is inside it.`);
+                }
+                parentId = parent.parent;
+            }
+        }
+        return { snapshot: merged, notes: notes };
+    }
+
+    /**
+     * Opens the partial-load dialog: pick a workspace, tick the parts to load, and everything unticked stays as it is.
+     */
+    showPartialDialog() {
+        if (this.busy || this.restoring) {
+            return;
+        }
+        if (this.workspaces.length == 0) {
+            showError('There are no saved workspaces to load from.');
+            return;
+        }
+        if (!this.isReady()) {
+            return;
+        }
+        this.closeDialog();
+        let info = this.listParamGroups();
+        let backdrop = createDiv(null, 'hartsy-workspaces-dialog-backdrop');
+        let dialog = createDiv(null, 'hartsy-workspaces-dialog');
+        dialog.setAttribute('role', 'dialog');
+        dialog.setAttribute('aria-modal', 'true');
+        dialog.setAttribute('aria-label', 'Load part of a workspace');
+        backdrop.append(dialog);
+        dialog.append(createDiv(null, 'hartsy-workspaces-dialog-title', 'Load part of a workspace'));
+        let sourceRow = createDiv(null, 'hartsy-workspaces-dialog-row');
+        sourceRow.append(document.createTextNode('From '));
+        let source = document.createElement('select');
+        source.className = 'hartsy-workspaces-dialog-source';
+        let sorted = this.workspaces.slice().sort((a, b) => `${a.name}`.localeCompare(`${b.name}`));
+        for (let workspace of sorted) {
+            let option = document.createElement('option');
+            option.value = workspace.id;
+            option.textContent = workspace.name;
+            source.append(option);
+        }
+        if (this.currentId && sorted.some(w => w.id == this.currentId)) {
+            source.value = this.currentId;
+        }
+        sourceRow.append(source);
+        dialog.append(sourceRow);
+        dialog.append(createDiv(null, 'hartsy-workspaces-dialog-note', 'Only the ticked parts change. Everything else stays as it is now.'));
+        let list = createDiv(null, 'hartsy-workspaces-dialog-list');
+        let boxes = [];
+        let addRow = (kind, id, text, depth, hint) => {
+            let label = document.createElement('label');
+            label.className = 'hartsy-workspaces-dialog-item';
+            label.style.paddingLeft = `${depth * 1.2}rem`;
+            let box = document.createElement('input');
+            box.type = 'checkbox';
+            box.dataset.kind = kind;
+            box.dataset.id = id;
+            label.append(box);
+            label.append(document.createTextNode(` ${text}`));
+            if (hint) {
+                let hintElem = document.createElement('span');
+                hintElem.className = 'hartsy-workspaces-dialog-hint';
+                hintElem.textContent = hint;
+                label.append(hintElem);
+            }
+            list.append(label);
+            boxes.push(box);
+        };
+        addRow('model', '', 'Model', 0, null);
+        addRow('presets', '', 'Presets', 0, 'The preset selection changes. Your current values in unticked groups are kept.');
+        for (let group of info.groups) {
+            addRow('group', group.id, group.name, group.depth, null);
+        }
+        if (info.hasOther) {
+            addRow('other', '', 'Other parameters (no group)', 0, null);
+        }
+        dialog.append(list);
+        let actions = createDiv(null, 'hartsy-workspaces-dialog-actions');
+        let makeButton = (text, handler) => {
+            let button = document.createElement('button');
+            button.className = 'basic-button';
+            button.textContent = text;
+            button.addEventListener('click', handler);
+            actions.append(button);
+        };
+        makeButton('Select all', () => {
+            for (let box of boxes) {
+                box.checked = true;
+            }
+        });
+        makeButton('Select none', () => {
+            for (let box of boxes) {
+                box.checked = false;
+            }
+        });
+        makeButton('Load', () => {
+            let selection = { model: false, presets: false, other: false, groups: new Set() };
+            for (let box of boxes) {
+                if (!box.checked) {
+                    continue;
+                }
+                if (box.dataset.kind == 'group') {
+                    selection.groups.add(box.dataset.id);
+                }
+                else {
+                    selection[box.dataset.kind] = true;
+                }
+            }
+            let sourceId = source.value;
+            this.closeDialog();
+            this.partialLoad(sourceId, selection);
+        });
+        makeButton('Cancel', () => {
+            this.closeDialog();
+        });
+        dialog.append(actions);
+        let onKey = event => {
+            if (event.key == 'Escape') {
+                this.closeDialog();
+            }
+        };
+        document.addEventListener('keydown', onKey);
+        backdrop.addEventListener('mousedown', event => {
+            if (event.target == backdrop) {
+                this.closeDialog();
+            }
+        });
+        this.closeDialogHandler = () => {
+            document.removeEventListener('keydown', onKey);
+            backdrop.remove();
+        };
+        document.body.append(backdrop);
+        source.focus();
+    }
+
+    /**
+     * Closes the partial-load dialog if it is open.
+     */
+    closeDialog() {
+        if (this.closeDialogHandler) {
+            let handler = this.closeDialogHandler;
+            this.closeDialogHandler = null;
+            handler();
+        }
+    }
+
+    /**
+     * Loads the chosen parts of a workspace into the Generate tab. The current workspace and its baseline stay as they are, so the result shows as modified.
+     * @param {string} sourceId The workspace to load from.
+     * @param {Object} selection The chosen parts: { model, presets, other, groups: Set of group IDs }.
+     */
+    async partialLoad(sourceId, selection) {
+        if (this.busy || this.restoring) {
+            return;
+        }
+        if (!selection.model && !selection.presets && !selection.other && selection.groups.size == 0) {
+            showError('Nothing was ticked, so nothing was loaded.');
+            return;
+        }
+        this.setBusy(true);
+        try {
+            try {
+                await this.listWorkspaces();
+            }
+            catch (error) {
+                console.error('Workspaces: could not refresh the list before loading; using the cached list.', error);
+            }
+            let source = this.workspaces.find(w => w.id == sourceId);
+            if (!source) {
+                showError('That workspace no longer exists. The list was refreshed.');
+                return;
+            }
+            let problem = this.validateSnapshot(source);
+            if (problem) {
+                showError(`This workspace cannot be loaded: ${problem}`);
+                return;
+            }
+            let built = this.buildPartialSnapshot(source, selection);
+            let result = await this.applySnapshot(built.snapshot, { notify: false });
+            if (result.status == 'success') {
+                result.message = 'The chosen parts were loaded.';
+            }
+            for (let note of built.notes) {
+                result.warnings.push(note);
+            }
+            this.showResult(result);
+            if (result.status == 'success' || result.status == 'incomplete') {
+                this.setStatus(`Loaded the chosen parts of "${source.name}".`);
+            }
+        }
+        finally {
+            this.setBusy(false);
+        }
+    }
+
+    /**
+     * Turns a stored workspace into the form written to export files: the saved settings and the name, without server-owned fields.
+     * @param {Object} entry The stored workspace.
+     * @returns {Object} The export entry.
+     */
+    toExportEntry(entry) {
+        return { name: entry.name, schemaVersion: entry.schemaVersion, values: entry.values, groups: entry.groups, presets: entry.presets, unsupported: entry.unsupported };
+    }
+
+    /**
+     * Downloads workspaces as one JSON file.
+     * @param {Array<Object>} entries The stored workspaces to export.
+     * @param {string} fileName The file name to suggest.
+     */
+    downloadExport(entries, fileName) {
+        let data = { format: this.exportFormat, formatVersion: 1, exportedAt: new Date().toISOString(), workspaces: entries.map(e => this.toExportEntry(e)) };
+        let blob = new Blob([JSON.stringify(data, null, 1)], { type: 'application/json' });
+        let url = URL.createObjectURL(blob);
+        let link = document.createElement('a');
+        link.href = url;
+        link.download = fileName;
+        document.body.append(link);
+        link.click();
+        link.remove();
+        setTimeout(() => {
+            URL.revokeObjectURL(url);
+        }, 1000);
+    }
+
+    /**
+     * Exports the current workspace's saved version.
+     */
+    exportCurrent() {
+        let entry = this.getCurrentEntry();
+        if (!entry) {
+            return;
+        }
+        let safeName = `${entry.name}`.replace(/[^A-Za-z0-9_-]+/g, '_').replace(/^_+|_+$/g, '') || 'workspace';
+        this.downloadExport([entry], `swarmui-workspace-${safeName}.json`);
+        this.setStatus(`Exported the saved version of "${entry.name}".`);
+    }
+
+    /**
+     * Exports every workspace as one file.
+     */
+    async exportAll() {
+        if (this.busy) {
+            return;
+        }
+        try {
+            await this.listWorkspaces();
+        }
+        catch (error) {
+            console.error('Workspaces: could not refresh the list before exporting; using the cached list.', error);
+        }
+        if (this.workspaces.length == 0) {
+            showError('There are no workspaces to export.');
+            return;
+        }
+        this.downloadExport(this.workspaces, 'swarmui-workspaces.json');
+        this.setStatus(`Exported ${this.workspaces.length} ${this.workspaces.length == 1 ? 'workspace' : 'workspaces'}.`);
+    }
+
+    /**
+     * Opens a file picker and imports the chosen file.
+     */
+    pickImportFile() {
+        if (this.busy || this.restoring) {
+            return;
+        }
+        let input = document.createElement('input');
+        input.type = 'file';
+        input.accept = '.json,application/json';
+        input.addEventListener('change', () => {
+            if (input.files && input.files.length > 0) {
+                this.importFile(input.files[0]);
+            }
+        });
+        input.click();
+    }
+
+    /**
+     * Reads, checks, and imports a workspace file. The whole file is checked before anything is sent, and the server stores all of it or none of it.
+     * @param {File} file The chosen file.
+     */
+    async importFile(file) {
+        if (this.busy || this.restoring) {
+            return;
+        }
+        if (file.size > this.maxImportBytes) {
+            showError(`Nothing was imported: the file is larger than ${Math.round(this.maxImportBytes / 1024 / 1024)} MB.`);
+            return;
+        }
+        let text;
+        try {
+            text = await file.text();
+        }
+        catch (error) {
+            showError('Nothing was imported: the file could not be read.');
+            return;
+        }
+        let parsed = this.parseImport(text);
+        if (parsed.error) {
+            showError(`Nothing was imported: ${parsed.error}`);
+            return;
+        }
+        this.setBusy(true);
+        try {
+            await this.listWorkspaces();
+            this.makeNamesUnique(parsed.entries);
+            let response = await this.callApi('WorkspacesImport', { workspaces: parsed.entries });
+            await this.listWorkspaces();
+            this.setStatus(`Imported ${response.imported} ${response.imported == 1 ? 'workspace' : 'workspaces'}.`);
+        }
+        catch (error) {
+            showError(`Nothing was imported: ${error}`);
+        }
+        finally {
+            this.setBusy(false);
+        }
+    }
+
+    /**
+     * Checks the text of an import file as a whole. Accepts an export file, a bare list of workspaces, or a single workspace.
+     * @param {string} text The file text.
+     * @returns {Object} { entries } with clean workspace entries, or { error } describing the first problem.
+     */
+    parseImport(text) {
+        let data;
+        try {
+            data = JSON.parse(text);
+        }
+        catch (error) {
+            return { error: 'the file is not valid JSON.' };
+        }
+        let list;
+        if (Array.isArray(data)) {
+            list = data;
+        }
+        else if (this.isPlainObject(data) && Array.isArray(data.workspaces)) {
+            if ('format' in data && data.format != this.exportFormat) {
+                return { error: 'the file is not a Workspaces export.' };
+            }
+            if (Number.isInteger(data.formatVersion) && data.formatVersion > 1) {
+                return { error: `the file uses export format ${data.formatVersion}, which is newer than this extension supports. Update the Workspaces extension.` };
+            }
+            list = data.workspaces;
+        }
+        else if (this.isPlainObject(data) && 'schemaVersion' in data) {
+            list = [data];
+        }
+        else {
+            return { error: 'the file is not a Workspaces export.' };
+        }
+        if (list.length == 0) {
+            return { error: 'the file contains no workspaces.' };
+        }
+        if (list.length > this.maxImportCount) {
+            return { error: `the file contains ${list.length} workspaces, and an import can hold at most ${this.maxImportCount}.` };
+        }
+        let entries = [];
+        for (let i = 0; i < list.length; i++) {
+            let item = list[i];
+            let label = `workspace ${i + 1}`;
+            if (!this.isPlainObject(item)) {
+                return { error: `${label} is not an object.` };
+            }
+            let name = typeof item.name == 'string' ? item.name.trim() : '';
+            if (name.length < 1 || name.length > this.maxNameLength) {
+                return { error: `${label} needs a name of 1 to ${this.maxNameLength} characters.` };
+            }
+            let problem = this.validateSnapshot(item);
+            if (problem) {
+                return { error: `${label} ("${name}") cannot be imported: ${problem}` };
+            }
+            entries.push(this.toExportEntry({ name: name, schemaVersion: item.schemaVersion, values: item.values, groups: item.groups, presets: item.presets, unsupported: item.unsupported }));
+        }
+        return { entries: entries };
+    }
+
+    /**
+     * Renames imported entries whose names are already taken (by existing workspaces or earlier entries in the file) by adding " (2)", " (3)", and so on.
+     * @param {Array<Object>} entries The entries to import. Changed in place.
+     */
+    makeNamesUnique(entries) {
+        let used = new Set();
+        for (let workspace of this.workspaces) {
+            used.add(`${workspace.name}`.toLowerCase());
+        }
+        for (let entry of entries) {
+            let name = entry.name;
+            let counter = 2;
+            while (used.has(name.toLowerCase())) {
+                let suffix = ` (${counter++})`;
+                name = `${entry.name.slice(0, this.maxNameLength - suffix.length)}${suffix}`;
+            }
+            entry.name = name;
+            used.add(name.toLowerCase());
+        }
     }
 
     /**
