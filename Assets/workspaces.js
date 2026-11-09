@@ -56,32 +56,12 @@ class HartsyWorkspacesManager {
         this.trackingAttached = false;
         /** Pending timer that clears the toolbar's status text, or null. */
         this.statusTimer = null;
-        /** Value of the 'format' field in exported files. */
-        this.exportFormat = 'swarmui-workspaces';
-        /** Largest import file accepted, in bytes. */
-        this.maxImportBytes = 8 * 1024 * 1024;
-        /** Most workspaces one import may hold. Matches the server's limit. */
-        this.maxImportCount = 200;
         /** Longest workspace name, in characters. Matches the server's limit. */
         this.maxNameLength = 100;
         /** Longest folder name, in characters. Matches the server's limit. */
         this.maxFolderLength = 100;
-        /** Most tags on one workspace. Matches the server's limit. */
-        this.maxTags = 20;
-        /** Longest tag, in characters. Matches the server's limit. */
-        this.maxTagLength = 40;
         /** Text typed in the toolbar's search box, used to filter the dropdown. */
         this.searchText = '';
-        /** Thumbnails as last fetched: map of workspace ID to a small JPEG data URL. Fetched separately from the list. */
-        this.thumbnails = {};
-        /** True once the thumbnails have been fetched from the server. */
-        this.thumbsLoaded = false;
-        /** Side length of a thumbnail, in pixels. */
-        this.thumbnailSize = 96;
-        /** Longest thumbnail data URL the server accepts, in characters. */
-        this.maxThumbChars = 30000;
-        /** Function that closes the open partial-load dialog, or null when none is open. */
-        this.closeDialogHandler = null;
         /** Pending timer for the debounced draft save, or null. */
         this.draftTimer = null;
         /** Timer that refreshes this tab's "still open" mark, or null. */
@@ -1363,7 +1343,7 @@ class HartsyWorkspacesManager {
     }
 
     /**
-     * Reduces a snapshot to the parts that count for modified-state comparison. Timestamps, revision, name, and thumbnails are left out. List order is kept.
+     * Reduces a snapshot to the parts that count for modified-state comparison. Timestamps, revision, and name are left out. List order is kept.
      * @param {Object} snapshot A captured snapshot.
      * @returns {string} Stable text for comparing two states.
      */
@@ -1415,14 +1395,9 @@ class HartsyWorkspacesManager {
             ['rename', 'Rename...', 'Rename this workspace'],
             null,
             ['star', 'Bookmark', 'List this workspace first'],
-            ['organize', 'Folder and tags...', 'Set this workspace\'s folder and tags'],
-            ['thumbnail', 'Set thumbnail from current image', 'Use the image currently shown in the Generate tab as this workspace\'s picture in the picker'],
+            ['organize', 'Folder...', 'Set this workspace\'s folder'],
             null,
             ['loadpart', 'Load part of a workspace...', 'Load only some parts of a workspace and leave everything else as it is'],
-            null,
-            ['export', 'Export this workspace', 'Download the saved version of this workspace as a JSON file'],
-            ['exportall', 'Export all workspaces', 'Download every workspace as one JSON file'],
-            ['import', 'Import from file...', 'Add workspaces from a JSON file'],
             null,
             ['delete', 'Delete this workspace', 'Delete this workspace. Your current settings stay as they are']
         ];
@@ -1441,7 +1416,7 @@ class HartsyWorkspacesManager {
             + '<span class="hartsy-workspaces-modified" title="The settings differ from the saved workspace" hidden>● Modified</span>'
             + '<button class="basic-button hartsy-workspaces-more" aria-haspopup="menu" aria-expanded="false" title="More actions" aria-label="More workspace actions">⋯</button>'
             + '<div class="hartsy-workspaces-panel hartsy-workspaces-picker-panel" hidden>'
-            + '<input type="search" class="hartsy-workspaces-search" placeholder="Search by name, folder or tag..." aria-label="Search workspaces" />'
+            + '<input type="search" class="hartsy-workspaces-search" placeholder="Search by name or folder..." aria-label="Search workspaces" />'
             + '<div class="hartsy-workspaces-list" role="listbox"></div>'
             + '<button class="hartsy-workspaces-item hartsy-workspaces-new" title="Save the current settings as a new workspace">+ New workspace...</button>'
             + '</div>'
@@ -1459,11 +1434,7 @@ class HartsyWorkspacesManager {
             rename: () => this.renameCurrent(),
             star: () => this.toggleBookmark(),
             organize: () => this.editOrganization(),
-            thumbnail: () => this.useCurrentImageAsThumbnail(),
             loadpart: () => this.showPartialDialog(),
-            export: () => this.exportCurrent(),
-            exportall: () => this.exportAll(),
-            import: () => this.pickImportFile(),
             delete: () => this.deleteCurrent()
         };
         for (let name of Object.keys(actions)) {
@@ -1534,7 +1505,6 @@ class HartsyWorkspacesManager {
         if (kind == 'picker') {
             this.fillPicker();
             toolbar.querySelector('.hartsy-workspaces-search').focus();
-            this.loadThumbnails();
         }
         else {
             let first = panel.querySelector('.hartsy-workspaces-item:not(:disabled)');
@@ -1618,11 +1588,7 @@ class HartsyWorkspacesManager {
         setDisabled('rename', this.busy || !hasCurrent);
         setDisabled('star', this.busy || !hasCurrent);
         setDisabled('organize', this.busy || !hasCurrent);
-        setDisabled('thumbnail', this.busy || !hasCurrent);
         setDisabled('loadpart', this.busy || !hasAny);
-        setDisabled('export', this.busy || !hasCurrent);
-        setDisabled('exportall', this.busy || !hasAny);
-        setDisabled('import', this.busy);
         setDisabled('delete', this.busy || !hasCurrent);
         toolbar.querySelector('.hartsy-workspaces-star').textContent = hasCurrent && entry.bookmarked ? 'Remove bookmark' : 'Bookmark';
         if (!toolbar.querySelector('.hartsy-workspaces-picker-panel').hidden) {
@@ -1631,18 +1597,16 @@ class HartsyWorkspacesManager {
     }
 
     /**
-     * Returns whether a workspace matches the search text, by name, folder, or tag. A leading "#" is ignored. Empty search matches everything.
+     * Returns whether a workspace matches the search text, by name or folder. Empty search matches everything.
      * @param {Object} workspace The stored workspace.
      * @param {string} query The lowercase search text.
      * @returns {boolean} True if it matches.
      */
     matchesSearch(workspace, query) {
-        let text = query.startsWith('#') ? query.slice(1) : query;
-        if (text == '') {
+        if (query == '') {
             return true;
         }
-        let haystack = [`${workspace.name}`, `${workspace.folder || ''}`, ...(Array.isArray(workspace.tags) ? workspace.tags : [])].join('\n').toLowerCase();
-        return haystack.includes(text);
+        return `${workspace.name}\n${workspace.folder || ''}`.toLowerCase().includes(query);
     }
 
     /**
@@ -1657,41 +1621,13 @@ class HartsyWorkspacesManager {
         let compare = (a, b) => `${a.name}`.localeCompare(`${b.name}`);
         let shown = this.workspaces.filter(w => w.id == this.currentId || this.matchesSearch(w, query)).sort(compare);
         list.innerHTML = '';
-        let makeItem = (id, name, tags, current) => {
+        let makeItem = (id, name, current) => {
             let item = document.createElement('button');
-            item.className = `hartsy-workspaces-item${current ? ' hartsy-workspaces-item-current' : ''}${id ? ' hartsy-workspaces-item-row' : ''}`;
+            item.className = `hartsy-workspaces-item${current ? ' hartsy-workspaces-item-current' : ''}`;
             item.dataset.id = id;
             item.setAttribute('role', 'option');
             item.setAttribute('aria-selected', current ? 'true' : 'false');
-            if (id) {
-                // A small picture when there is one, otherwise a quiet placeholder so the names stay aligned.
-                let thumb = this.thumbnails[id];
-                if (typeof thumb == 'string' && thumb.startsWith('data:image/jpeg;base64,')) {
-                    let img = document.createElement('img');
-                    img.className = 'hartsy-workspaces-thumb';
-                    img.alt = '';
-                    img.src = thumb;
-                    item.append(img);
-                }
-                else {
-                    let empty = document.createElement('span');
-                    empty.className = 'hartsy-workspaces-thumb hartsy-workspaces-thumb-empty';
-                    item.append(empty);
-                }
-            }
-            let text = document.createElement('span');
-            text.className = 'hartsy-workspaces-item-text';
-            let nameElem = document.createElement('span');
-            nameElem.className = 'hartsy-workspaces-item-name';
-            nameElem.textContent = `${current ? '✓ ' : ''}${name}`;
-            text.append(nameElem);
-            if (tags && tags.length > 0) {
-                let tagElem = document.createElement('span');
-                tagElem.className = 'hartsy-workspaces-item-tags';
-                tagElem.textContent = ` #${tags.join(' #')}`;
-                text.append(tagElem);
-            }
-            item.append(text);
+            item.textContent = `${current ? '✓ ' : ''}${name}`;
             return item;
         };
         let addGroup = (label, items) => {
@@ -1705,11 +1641,11 @@ class HartsyWorkspacesManager {
                 list.append(labelElem);
             }
             for (let workspace of items) {
-                list.append(makeItem(workspace.id, workspace.name, Array.isArray(workspace.tags) ? workspace.tags : [], workspace.id == this.currentId));
+                list.append(makeItem(workspace.id, workspace.name, workspace.id == this.currentId));
             }
         };
         if (this.currentId) {
-            list.append(makeItem('', 'No workspace (keep the current settings)', [], false));
+            list.append(makeItem('', 'No workspace (keep the current settings)', false));
         }
         let bookmarked = shown.filter(w => w.bookmarked);
         let rest = shown.filter(w => !w.bookmarked);
@@ -1754,33 +1690,8 @@ class HartsyWorkspacesManager {
     }
 
     /**
-     * Turns the text typed for tags into a list: split on commas, trimmed, empty ones dropped. The server lowercases and de-duplicates.
-     * @param {string} text The text, for example "portrait, video, fast".
-     * @returns {Array<string>} The tags, or null (after showing an error) if one is too long or there are too many.
-     */
-    parseTagText(text) {
-        let tags = [];
-        for (let part of `${text}`.split(',')) {
-            let tag = part.trim();
-            if (tag == '') {
-                continue;
-            }
-            if (tag.length > this.maxTagLength) {
-                showError(`A tag can be at most ${this.maxTagLength} characters: "${tag.slice(0, 20)}..." is too long.`);
-                return null;
-            }
-            tags.push(tag);
-        }
-        if (tags.length > this.maxTags) {
-            showError(`A workspace can have at most ${this.maxTags} tags.`);
-            return null;
-        }
-        return tags;
-    }
-
-    /**
-     * Saves the current workspace's folder, tags, or bookmark. The saved settings are not touched, so unsaved changes stay unsaved.
-     * @param {Object} changes Any of { folder, tags, bookmarked }.
+     * Saves the current workspace's folder or bookmark. The saved settings are not touched, so unsaved changes stay unsaved.
+     * @param {Object} changes Any of { folder, bookmarked }.
      */
     async updateMeta(changes) {
         let entry = this.getCurrentEntry();
@@ -1792,7 +1703,7 @@ class HartsyWorkspacesManager {
             let response = await this.callApi('WorkspacesSetMeta', { id: entry.id, revision: this.currentRevision, ...changes });
             this.currentRevision = response.revision;
             try {
-                // Take the stored values back, so tags show exactly as the server normalized them.
+                // Take the stored values back, so the list shows exactly what the server kept.
                 await this.listWorkspaces();
             }
             catch (error) {
@@ -1802,108 +1713,6 @@ class HartsyWorkspacesManager {
         }
         catch (error) {
             await this.reportFailure('update', error);
-        }
-        finally {
-            this.setBusy(false);
-        }
-    }
-
-    /**
-     * Fetches the thumbnails from the server the first time the picker opens, then redraws the picker. Thumbnails are not part of the workspace list, so listing stays fast.
-     */
-    async loadThumbnails() {
-        if (this.thumbsLoaded) {
-            return;
-        }
-        try {
-            let response = await this.callApi('WorkspacesThumbnails', {});
-            this.thumbnails = response.thumbnails || {};
-            this.thumbsLoaded = true;
-            let panel = document.querySelector('.hartsy-workspaces-picker-panel');
-            if (panel && !panel.hidden) {
-                this.fillPicker();
-            }
-        }
-        catch (error) {
-            console.error('Workspaces: could not load thumbnails.', error);
-        }
-    }
-
-    /**
-     * Makes a small square JPEG from the image currently shown in the Generate tab.
-     * @returns {Promise<string>} A JPEG data URL within the server's size limit, or null if no image is shown, it is a video or audio file, or it cannot be read.
-     */
-    async captureThumbnail() {
-        let src = typeof currentImgSrc != 'undefined' ? currentImgSrc : null;
-        if (!src || typeof src != 'string' || src.startsWith('data:video') || src.startsWith('data:audio') || /\.(mp4|webm|mov|mkv|mp3|wav|ogg|flac|m4a)(\?|#|$)/i.test(src)) {
-            return null;
-        }
-        let img = new Image();
-        let loaded = await new Promise(resolve => {
-            img.onload = () => resolve(true);
-            img.onerror = () => resolve(false);
-            img.src = src;
-        });
-        if (!loaded || !img.naturalWidth || !img.naturalHeight) {
-            return null;
-        }
-        try {
-            let size = this.thumbnailSize;
-            let canvas = document.createElement('canvas');
-            canvas.width = size;
-            canvas.height = size;
-            let scale = Math.max(size / img.naturalWidth, size / img.naturalHeight);
-            let width = img.naturalWidth * scale;
-            let height = img.naturalHeight * scale;
-            canvas.getContext('2d').drawImage(img, (size - width) / 2, (size - height) / 2, width, height);
-            for (let quality of [0.7, 0.5, 0.35]) {
-                let url = canvas.toDataURL('image/jpeg', quality);
-                if (url.length <= this.maxThumbChars) {
-                    return url;
-                }
-            }
-        }
-        catch (error) {
-            console.error('Workspaces: could not make a thumbnail.', error);
-        }
-        return null;
-    }
-
-    /**
-     * Stores a thumbnail for a workspace, or removes it when the data URL is empty. The workspace and its revision are not changed.
-     * @param {string} id The workspace ID.
-     * @param {string} dataUrl The JPEG data URL, or an empty string to remove.
-     */
-    async setThumbnail(id, dataUrl) {
-        await this.callApi('WorkspacesSetThumbnail', { id: id, thumbnail: dataUrl });
-        if (dataUrl) {
-            this.thumbnails[id] = dataUrl;
-        }
-        else {
-            delete this.thumbnails[id];
-        }
-    }
-
-    /**
-     * Uses the image currently shown in the Generate tab as the current workspace's thumbnail.
-     */
-    async useCurrentImageAsThumbnail() {
-        let entry = this.getCurrentEntry();
-        if (this.busy || this.restoring || !entry) {
-            return;
-        }
-        this.setBusy(true);
-        try {
-            let url = await this.captureThumbnail();
-            if (!url) {
-                showError('There is no image to use. Generate an image or open one from the history first.');
-                return;
-            }
-            await this.setThumbnail(entry.id, url);
-            this.setStatus(`Set the thumbnail of "${entry.name}".`);
-        }
-        catch (error) {
-            showError(`Could not set the thumbnail: ${error}`);
         }
         finally {
             this.setBusy(false);
@@ -1921,7 +1730,7 @@ class HartsyWorkspacesManager {
     }
 
     /**
-     * Asks for the current workspace's folder and tags, and saves them.
+     * Asks for the current workspace's folder, and saves it.
      */
     async editOrganization() {
         let entry = this.getCurrentEntry();
@@ -1937,15 +1746,7 @@ class HartsyWorkspacesManager {
             showError(`A folder name can be at most ${this.maxFolderLength} characters.`);
             return;
         }
-        let tagText = prompt('Tags, separated by commas (leave empty for none):', Array.isArray(entry.tags) ? entry.tags.join(', ') : '');
-        if (tagText == null) {
-            return;
-        }
-        let tags = this.parseTagText(tagText);
-        if (tags == null) {
-            return;
-        }
-        await this.updateMeta({ folder: folder, tags: tags });
+        await this.updateMeta({ folder: folder });
     }
 
     /**
@@ -2164,22 +1965,14 @@ class HartsyWorkspacesManager {
         }
         this.setBusy(true);
         try {
-            // Save As keeps the original's folder and tags (not its bookmark); New starts unorganized.
+            // Save As keeps the original's folder (not its bookmark); New starts unorganized.
             let request = { name: name, snapshot: snapshot };
             if (copy && current) {
                 request.folder = current.folder || '';
-                request.tags = Array.isArray(current.tags) ? current.tags : [];
             }
             let response = await this.callApi('WorkspacesCreate', request);
             this.storeEntry(response.workspace);
             this.setCurrent(response.workspace, snapshot);
-            // A new workspace gets the image currently shown as its picture, if there is one. This is a nicety, so failures are only logged.
-            let newId = response.workspace.id;
-            this.captureThumbnail().then(url => {
-                return url ? this.setThumbnail(newId, url) : null;
-            }).catch(thumbError => {
-                console.error('Workspaces: could not store a thumbnail for the new workspace.', thumbError);
-            });
         }
         catch (error) {
             showError(`Could not save the workspace: ${error}`);
@@ -2236,7 +2029,6 @@ class HartsyWorkspacesManager {
         try {
             await this.callApi('WorkspacesDelete', { id: entry.id, revision: this.currentRevision });
             this.workspaces = this.workspaces.filter(w => w.id != entry.id);
-            delete this.thumbnails[entry.id];
             this.detach();
         }
         catch (error) {
@@ -2382,7 +2174,7 @@ class HartsyWorkspacesManager {
     }
 
     /**
-     * Opens the partial-load dialog: pick a workspace, tick the parts to load, and everything unticked stays as it is.
+     * Opens the partial-load dialog, built from Swarm's standard modal markup: pick a workspace, tick the parts to load, and everything unticked stays as it is.
      */
     showPartialDialog() {
         if (this.busy || this.restoring) {
@@ -2395,19 +2187,27 @@ class HartsyWorkspacesManager {
         if (!this.isReady()) {
             return;
         }
-        this.closeDialog();
+        let existing = document.getElementById('hartsy_workspaces_partial_modal');
+        if (existing) {
+            $(existing).modal('hide');
+            existing.remove();
+        }
         let info = this.listParamGroups();
-        let backdrop = createDiv(null, 'hartsy-workspaces-dialog-backdrop');
-        let dialog = createDiv(null, 'hartsy-workspaces-dialog');
-        dialog.setAttribute('role', 'dialog');
-        dialog.setAttribute('aria-modal', 'true');
-        dialog.setAttribute('aria-label', 'Load part of a workspace');
-        backdrop.append(dialog);
-        dialog.append(createDiv(null, 'hartsy-workspaces-dialog-title', 'Load part of a workspace'));
-        let sourceRow = createDiv(null, 'hartsy-workspaces-dialog-row');
-        sourceRow.append(document.createTextNode('From '));
+        let modal = document.createElement('div');
+        modal.className = 'modal';
+        modal.id = 'hartsy_workspaces_partial_modal';
+        modal.tabIndex = -1;
+        modal.setAttribute('role', 'dialog');
+        modal.innerHTML = '<div class="modal-dialog" role="document"><div class="modal-content">'
+            + '<div class="modal-header"><h5 class="modal-title">Load part of a workspace</h5></div>'
+            + '<div class="modal-body"></div>'
+            + '<div class="modal-footer"></div>'
+            + '</div></div>';
+        let body = modal.querySelector('.modal-body');
+        let footer = modal.querySelector('.modal-footer');
+        let sourceRow = createDiv(null, null, 'From ');
         let source = document.createElement('select');
-        source.className = 'hartsy-workspaces-dialog-source';
+        source.className = 'modal_text_extra';
         let sorted = this.workspaces.slice().sort((a, b) => `${a.name}`.localeCompare(`${b.name}`));
         for (let workspace of sorted) {
             let option = document.createElement('option');
@@ -2419,9 +2219,8 @@ class HartsyWorkspacesManager {
             source.value = this.currentId;
         }
         sourceRow.append(source);
-        dialog.append(sourceRow);
-        dialog.append(createDiv(null, 'hartsy-workspaces-dialog-note', 'Only the ticked parts change. Everything else stays as it is now.'));
-        let list = createDiv(null, 'hartsy-workspaces-dialog-list');
+        body.append(sourceRow);
+        body.append(createDiv(null, 'hartsy-workspaces-hint', 'Only the ticked parts change. Everything else stays as it is now.'));
         let boxes = [];
         let addRow = (kind, id, text, depth, hint) => {
             let label = document.createElement('label');
@@ -2434,12 +2233,9 @@ class HartsyWorkspacesManager {
             label.append(box);
             label.append(document.createTextNode(` ${text}`));
             if (hint) {
-                let hintElem = document.createElement('span');
-                hintElem.className = 'hartsy-workspaces-dialog-hint';
-                hintElem.textContent = hint;
-                label.append(hintElem);
+                label.append(createDiv(null, 'hartsy-workspaces-hint', hint));
             }
-            list.append(label);
+            body.append(label);
             boxes.push(box);
         };
         addRow('model', '', 'Model', 0, null);
@@ -2450,26 +2246,28 @@ class HartsyWorkspacesManager {
         if (info.hasOther) {
             addRow('other', '', 'Other parameters (no group)', 0, null);
         }
-        dialog.append(list);
-        let actions = createDiv(null, 'hartsy-workspaces-dialog-actions');
-        let makeButton = (text, handler) => {
+        let makeButton = (text, primary, handler) => {
             let button = document.createElement('button');
-            button.className = 'basic-button';
+            button.type = 'button';
+            button.className = `btn ${primary ? 'btn-primary' : 'btn-secondary'} basic-button`;
             button.textContent = text;
             button.addEventListener('click', handler);
-            actions.append(button);
+            footer.append(button);
         };
-        makeButton('Select all', () => {
+        makeButton('Select all', false, () => {
             for (let box of boxes) {
                 box.checked = true;
             }
         });
-        makeButton('Select none', () => {
+        makeButton('Select none', false, () => {
             for (let box of boxes) {
                 box.checked = false;
             }
         });
-        makeButton('Load', () => {
+        makeButton('Cancel', false, () => {
+            $(modal).modal('hide');
+        });
+        makeButton('Load', true, () => {
             let selection = { model: false, presets: false, other: false, groups: new Set() };
             for (let box of boxes) {
                 if (!box.checked) {
@@ -2483,41 +2281,14 @@ class HartsyWorkspacesManager {
                 }
             }
             let sourceId = source.value;
-            this.closeDialog();
+            $(modal).modal('hide');
             this.partialLoad(sourceId, selection);
         });
-        makeButton('Cancel', () => {
-            this.closeDialog();
+        document.body.append(modal);
+        $(modal).on('hidden.bs.modal', () => {
+            modal.remove();
         });
-        dialog.append(actions);
-        let onKey = event => {
-            if (event.key == 'Escape') {
-                this.closeDialog();
-            }
-        };
-        document.addEventListener('keydown', onKey);
-        backdrop.addEventListener('mousedown', event => {
-            if (event.target == backdrop) {
-                this.closeDialog();
-            }
-        });
-        this.closeDialogHandler = () => {
-            document.removeEventListener('keydown', onKey);
-            backdrop.remove();
-        };
-        document.body.append(backdrop);
-        source.focus();
-    }
-
-    /**
-     * Closes the partial-load dialog if it is open.
-     */
-    closeDialog() {
-        if (this.closeDialogHandler) {
-            let handler = this.closeDialogHandler;
-            this.closeDialogHandler = null;
-            handler();
-        }
+        $(modal).modal('show');
     }
 
     /**
@@ -2566,239 +2337,6 @@ class HartsyWorkspacesManager {
         }
         finally {
             this.setBusy(false);
-        }
-    }
-
-    /**
-     * Turns a stored workspace into the form written to export files: the saved settings and the name, without server-owned fields.
-     * @param {Object} entry The stored workspace.
-     * @returns {Object} The export entry.
-     */
-    toExportEntry(entry) {
-        let result = { name: entry.name, schemaVersion: entry.schemaVersion, values: entry.values, groups: entry.groups, presets: entry.presets, unsupported: entry.unsupported };
-        if (typeof entry.folder == 'string') {
-            result.folder = entry.folder;
-        }
-        if (Array.isArray(entry.tags)) {
-            result.tags = entry.tags;
-        }
-        if (typeof entry.bookmarked == 'boolean') {
-            result.bookmarked = entry.bookmarked;
-        }
-        return result;
-    }
-
-    /**
-     * Downloads workspaces as one JSON file.
-     * @param {Array<Object>} entries The stored workspaces to export.
-     * @param {string} fileName The file name to suggest.
-     */
-    downloadExport(entries, fileName) {
-        let data = { format: this.exportFormat, formatVersion: 1, exportedAt: new Date().toISOString(), workspaces: entries.map(e => this.toExportEntry(e)) };
-        let blob = new Blob([JSON.stringify(data, null, 1)], { type: 'application/json' });
-        let url = URL.createObjectURL(blob);
-        let link = document.createElement('a');
-        link.href = url;
-        link.download = fileName;
-        document.body.append(link);
-        link.click();
-        link.remove();
-        setTimeout(() => {
-            URL.revokeObjectURL(url);
-        }, 1000);
-    }
-
-    /**
-     * Exports the current workspace's saved version.
-     */
-    exportCurrent() {
-        let entry = this.getCurrentEntry();
-        if (!entry) {
-            return;
-        }
-        let safeName = `${entry.name}`.replace(/[^A-Za-z0-9_-]+/g, '_').replace(/^_+|_+$/g, '') || 'workspace';
-        this.downloadExport([entry], `swarmui-workspace-${safeName}.json`);
-        this.setStatus(`Exported the saved version of "${entry.name}".`);
-    }
-
-    /**
-     * Exports every workspace as one file.
-     */
-    async exportAll() {
-        if (this.busy) {
-            return;
-        }
-        try {
-            await this.listWorkspaces();
-        }
-        catch (error) {
-            console.error('Workspaces: could not refresh the list before exporting; using the cached list.', error);
-        }
-        if (this.workspaces.length == 0) {
-            showError('There are no workspaces to export.');
-            return;
-        }
-        this.downloadExport(this.workspaces, 'swarmui-workspaces.json');
-        this.setStatus(`Exported ${this.workspaces.length} ${this.workspaces.length == 1 ? 'workspace' : 'workspaces'}.`);
-    }
-
-    /**
-     * Opens a file picker and imports the chosen file.
-     */
-    pickImportFile() {
-        if (this.busy || this.restoring) {
-            return;
-        }
-        let input = document.createElement('input');
-        input.type = 'file';
-        input.accept = '.json,application/json';
-        input.addEventListener('change', () => {
-            if (input.files && input.files.length > 0) {
-                this.importFile(input.files[0]);
-            }
-        });
-        input.click();
-    }
-
-    /**
-     * Reads, checks, and imports a workspace file. The whole file is checked before anything is sent, and the server stores all of it or none of it.
-     * @param {File} file The chosen file.
-     */
-    async importFile(file) {
-        if (this.busy || this.restoring) {
-            return;
-        }
-        if (file.size > this.maxImportBytes) {
-            showError(`Nothing was imported: the file is larger than ${Math.round(this.maxImportBytes / 1024 / 1024)} MB.`);
-            return;
-        }
-        let text;
-        try {
-            text = await file.text();
-        }
-        catch (error) {
-            showError('Nothing was imported: the file could not be read.');
-            return;
-        }
-        let parsed = this.parseImport(text);
-        if (parsed.error) {
-            showError(`Nothing was imported: ${parsed.error}`);
-            return;
-        }
-        this.setBusy(true);
-        try {
-            let response;
-            try {
-                await this.listWorkspaces();
-                this.makeNamesUnique(parsed.entries);
-                response = await this.callApi('WorkspacesImport', { workspaces: parsed.entries });
-            }
-            catch (error) {
-                showError(`Nothing was imported: ${error}`);
-                return;
-            }
-            let summary = `Imported ${response.imported} ${response.imported == 1 ? 'workspace' : 'workspaces'}.`;
-            this.setStatus(summary);
-            try {
-                await this.listWorkspaces();
-            }
-            catch (error) {
-                // The server already stored everything, so say so: importing the file again would add a second copy.
-                showError(`${summary} The list could not be refreshed (${error}). Reload the page to see them, and do not import the file again.`);
-            }
-        }
-        finally {
-            this.setBusy(false);
-        }
-    }
-
-    /**
-     * Checks the text of an import file as a whole. Accepts an export file, a bare list of workspaces, or a single workspace.
-     * @param {string} text The file text.
-     * @returns {Object} { entries } with clean workspace entries, or { error } describing the first problem.
-     */
-    parseImport(text) {
-        let data;
-        try {
-            data = JSON.parse(text);
-        }
-        catch (error) {
-            return { error: 'the file is not valid JSON.' };
-        }
-        let list;
-        if (Array.isArray(data)) {
-            list = data;
-        }
-        else if (this.isPlainObject(data) && Array.isArray(data.workspaces)) {
-            if ('format' in data && data.format != this.exportFormat) {
-                return { error: 'the file is not a Workspaces export.' };
-            }
-            if (Number.isInteger(data.formatVersion) && data.formatVersion > 1) {
-                return { error: `the file uses export format ${data.formatVersion}, which is newer than this extension supports. Update the Workspaces extension.` };
-            }
-            list = data.workspaces;
-        }
-        else if (this.isPlainObject(data) && 'schemaVersion' in data) {
-            list = [data];
-        }
-        else {
-            return { error: 'the file is not a Workspaces export.' };
-        }
-        if (list.length == 0) {
-            return { error: 'the file contains no workspaces.' };
-        }
-        if (list.length > this.maxImportCount) {
-            return { error: `the file contains ${list.length} workspaces, and an import can hold at most ${this.maxImportCount}.` };
-        }
-        let entries = [];
-        for (let i = 0; i < list.length; i++) {
-            let item = list[i];
-            let label = `workspace ${i + 1}`;
-            if (!this.isPlainObject(item)) {
-                return { error: `${label} is not an object.` };
-            }
-            let name = typeof item.name == 'string' ? item.name.trim() : '';
-            if (name.length < 1 || name.length > this.maxNameLength) {
-                return { error: `${label} needs a name of 1 to ${this.maxNameLength} characters.` };
-            }
-            let problem = this.validateSnapshot(item);
-            if (problem) {
-                return { error: `${label} ("${name}") cannot be imported: ${problem}` };
-            }
-            if ('folder' in item && item.folder != null && (typeof item.folder != 'string' || item.folder.trim().length > this.maxFolderLength)) {
-                return { error: `${label} ("${name}") has an invalid folder: it must be text of at most ${this.maxFolderLength} characters.` };
-            }
-            if ('tags' in item && item.tags != null) {
-                if (!Array.isArray(item.tags) || item.tags.length > this.maxTags || item.tags.some(t => typeof t != 'string' || t.trim().length < 1 || t.trim().length > this.maxTagLength)) {
-                    return { error: `${label} ("${name}") has invalid tags: at most ${this.maxTags}, each 1 to ${this.maxTagLength} characters.` };
-                }
-            }
-            if ('bookmarked' in item && item.bookmarked != null && typeof item.bookmarked != 'boolean') {
-                return { error: `${label} ("${name}") has an invalid bookmark flag.` };
-            }
-            entries.push(this.toExportEntry({ name: name, schemaVersion: item.schemaVersion, values: item.values, groups: item.groups, presets: item.presets, unsupported: item.unsupported, folder: typeof item.folder == 'string' ? item.folder.trim() : undefined, tags: Array.isArray(item.tags) ? item.tags : undefined, bookmarked: typeof item.bookmarked == 'boolean' ? item.bookmarked : undefined }));
-        }
-        return { entries: entries };
-    }
-
-    /**
-     * Renames imported entries whose names are already taken (by existing workspaces or earlier entries in the file) by adding " (2)", " (3)", and so on.
-     * @param {Array<Object>} entries The entries to import. Changed in place.
-     */
-    makeNamesUnique(entries) {
-        let used = new Set();
-        for (let workspace of this.workspaces) {
-            used.add(`${workspace.name}`.toLowerCase());
-        }
-        for (let entry of entries) {
-            let name = entry.name;
-            let counter = 2;
-            while (used.has(name.toLowerCase())) {
-                let suffix = ` (${counter++})`;
-                name = `${entry.name.slice(0, this.maxNameLength - suffix.length)}${suffix}`;
-            }
-            entry.name = name;
-            used.add(name.toLowerCase());
         }
     }
 
@@ -3244,7 +2782,7 @@ class HartsyWorkspacesManager {
         if (target && (target.isContentEditable || (target.closest && target.closest('input, textarea, select, [contenteditable=""], [contenteditable="true"]')))) {
             return;
         }
-        if (this.closeDialogHandler || this.busy || this.restoring || document.querySelector('.modal.show')) {
+        if (this.busy || this.restoring || document.querySelector('.modal.show')) {
             return;
         }
         let area = document.getElementById('main_inputs_area');
