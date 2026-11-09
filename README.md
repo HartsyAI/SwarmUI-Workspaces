@@ -1,18 +1,26 @@
-# Workspaces (SwarmUI Extension)
+# SwarmUI-Workspaces
 
-Named snapshots of your generation configuration. Pick a workspace from the dropdown above the parameters to restore it. Each workspace records the parameter values and which parameter groups were enabled.
+A SwarmUI extension for saving and restoring named workspaces: snapshots of your Generate-tab settings, including which parameter groups are switched on.
 
-**Status:** scaffolding only. Not functional yet.
+## Status
+
+In development. The server API (create, update, rename, delete, import) is in place. The Generate-tab toolbar and load/save UI are not built yet.
 
 ## Installation
 
-Place this folder at `SwarmUI/src/Extensions/Workspaces/`, then restart SwarmUI.
+Clone into your SwarmUI extensions folder, then restart SwarmUI:
 
-## Connections and Storage
+```bash
+cd SwarmUI/src/Extensions
+git clone https://github.com/HartsyAI/SwarmUI-Workspaces.git Workspaces
+```
 
-- No external network connections.
+## Data and connections
+
 - Workspaces are stored per user on the SwarmUI server, in that user's generic data.
+- The extension makes no external network connections.
+- Workspaces are stored in SwarmUI's account database, so they are lost if that database is lost.
 
 ## License
 
-TBD.
+MIT. See [LICENSE](LICENSE).
