@@ -88,6 +88,8 @@ class HartsyWorkspacesManager {
         this.recheckTimer = null;
         /** Identifies the drafts the recovery notice currently shows, so an unchanged notice is not rebuilt. */
         this.recoverySignature = '';
+        /** Recovered drafts that could not be written back to browser storage, kept in memory for the notice on this page. */
+        this.heldDrafts = [];
         /** True once the Shift+S listener is attached. */
         this.shortcutAttached = false;
         /** Readable names for the unsupported-state IDs stored in a snapshot's 'unsupported' list. */
@@ -2500,6 +2502,9 @@ class HartsyWorkspacesManager {
             record.key = key;
             found.push(record);
         }
+        for (let held of this.heldDrafts) {
+            found.push(held);
+        }
         found.sort((a, b) => (b.savedAt || 0) - (a.savedAt || 0));
         return found;
     }
@@ -2538,9 +2543,32 @@ class HartsyWorkspacesManager {
             return;
         }
         record.tabId = `recovered-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-        if (this.storageSet(this.scopeKey('draft', record.tabId), JSON.stringify(record))) {
+        let newKey = this.scopeKey('draft', record.tabId);
+        let json = JSON.stringify(record);
+        if (this.storageSet(newKey, json)) {
             this.storageRemove(ownKey);
+            return;
         }
+        // Storage may have room for one copy but not two, so try a real move: free the old entry first.
+        this.storageRemove(ownKey);
+        if (this.storageSet(newKey, json)) {
+            return;
+        }
+        // Still no room. Put the original back as it was, and keep the draft in memory so the notice can still offer it on this page.
+        this.storageSet(ownKey, text);
+        record.key = null;
+        this.heldDrafts.push(record);
+    }
+
+    /**
+     * Throws away a draft the recovery notice offered: removes its stored copy, and its in-memory copy if it had to be held there.
+     * @param {Object} draft The draft record from findDrafts.
+     */
+    discardDraft(draft) {
+        if (draft.key) {
+            this.storageRemove(draft.key);
+        }
+        this.heldDrafts = this.heldDrafts.filter(d => d != draft);
     }
 
     /**
@@ -2593,7 +2621,7 @@ class HartsyWorkspacesManager {
         discard.className = 'basic-button';
         discard.textContent = 'Discard';
         discard.addEventListener('click', () => {
-            this.storageRemove(draft.key);
+            this.discardDraft(draft);
             this.showRecovery();
         });
         banner.append(discard);
@@ -2635,7 +2663,7 @@ class HartsyWorkspacesManager {
         if (result.status != 'success' && result.status != 'incomplete') {
             return;
         }
-        this.storageRemove(draft.key);
+        this.discardDraft(draft);
         // loadWorkspace refreshed the list, so compare with the entry and revision that were actually loaded, not the cached one from before.
         let loaded = entry ? this.getCurrentEntry() : null;
         if (!entry) {
