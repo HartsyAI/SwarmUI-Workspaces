@@ -33,29 +33,8 @@ public static class WorkspaceStore
     /// <summary>Maximum workspace name length, in characters.</summary>
     public const int MaxNameLength = 100;
 
-    /// <summary>Maximum number of workspaces accepted by one import.</summary>
-    public const int MaxImportCount = 200;
-
-    /// <summary>Generic data key holding all thumbnails, as a map of workspace ID to JPEG data URL. Kept apart from the workspace list so list responses stay small.</summary>
-    public const string ThumbKey = "thumbs";
-
-    /// <summary>Required start of every thumbnail: a small JPEG as a base64 data URL.</summary>
-    public const string ThumbPrefix = "data:image/jpeg;base64,";
-
-    /// <summary>Maximum length of one thumbnail data URL, in characters.</summary>
-    public const int MaxThumbChars = 30000;
-
-    /// <summary>Maximum combined length of all of a user's thumbnails, in characters.</summary>
-    public const int MaxThumbTotalChars = 2_000_000;
-
     /// <summary>Maximum folder name length, in characters.</summary>
     public const int MaxFolderLength = 100;
-
-    /// <summary>Maximum number of tags on one workspace.</summary>
-    public const int MaxTags = 20;
-
-    /// <summary>Maximum tag length, in characters.</summary>
-    public const int MaxTagLength = 40;
 
     /// <summary>Per-user lock objects, keyed by user ID.</summary>
     private static readonly ConcurrentDictionary<string, object> UserLocks = new();
@@ -101,75 +80,6 @@ public static class WorkspaceStore
             return false;
         }
         user.SaveGenericData(Category, Key, text);
-        return true;
-    }
-
-    /// <summary>Loads the user's thumbnail map (workspace ID to data URL). Returns an empty map if none is stored or the stored data is unreadable.</summary>
-    /// <param name="user">The user whose thumbnails to load.</param>
-    /// <returns>The thumbnail map.</returns>
-    public static JObject LoadThumbs(User user)
-    {
-        string text = user.GetGenericData(Category, ThumbKey);
-        if (string.IsNullOrWhiteSpace(text))
-        {
-            return new JObject();
-        }
-        try
-        {
-            return JObject.Parse(text);
-        }
-        catch (JsonReaderException)
-        {
-            return new JObject();
-        }
-    }
-
-    /// <summary>Stores the user's full thumbnail map in one write. Fails when persistence is disabled or the map is over the size limit.</summary>
-    /// <param name="user">The user whose thumbnails to save.</param>
-    /// <param name="thumbs">The complete thumbnail map.</param>
-    /// <param name="error">Set to the error object when this returns false; null otherwise.</param>
-    /// <returns>True if the map was stored.</returns>
-    public static bool TrySaveThumbs(User user, JObject thumbs, out JObject error)
-    {
-        error = null;
-        if (Program.NoPersist)
-        {
-            error = Error("storage_disabled", "Thumbnails cannot be saved because SwarmUI is running with --no_persist.");
-            return false;
-        }
-        int total = 0;
-        foreach (KeyValuePair<string, JToken> entry in thumbs)
-        {
-            total += entry.Value.ToString().Length;
-        }
-        if (total > MaxThumbTotalChars)
-        {
-            error = Error("quota_exceeded", "Thumbnail storage is full. Remove some thumbnails first.");
-            return false;
-        }
-        user.SaveGenericData(Category, ThumbKey, thumbs.ToString(Formatting.None));
-        return true;
-    }
-
-    /// <summary>Checks that text is a small, genuine JPEG data URL: the right prefix, a length limit, valid base64, and JPEG start bytes.</summary>
-    /// <param name="thumbnail">The data URL supplied by the client.</param>
-    /// <param name="error">Set to the error object when this returns false; null otherwise.</param>
-    /// <returns>True if the thumbnail is acceptable.</returns>
-    public static bool ValidateThumbnail(string thumbnail, out JObject error)
-    {
-        error = null;
-        if (!thumbnail.StartsWith(ThumbPrefix, StringComparison.Ordinal) || thumbnail.Length > MaxThumbChars)
-        {
-            error = Error("invalid_thumbnail", $"A thumbnail must be a JPEG data URL of at most {MaxThumbChars} characters.");
-            return false;
-        }
-        string base64 = thumbnail.Substring(ThumbPrefix.Length);
-        byte[] buffer = new byte[base64.Length];
-        if (!Convert.TryFromBase64String(base64, buffer, out int written) || written < 3 || buffer[0] != 0xFF || buffer[1] != 0xD8 || buffer[2] != 0xFF)
-        {
-            error = Error("invalid_thumbnail", "The thumbnail is not a valid JPEG image.");
-            return false;
-        }
         return true;
     }
 
@@ -317,10 +227,9 @@ public static class WorkspaceStore
     /// <param name="createdAt">Creation timestamp (UTC, ISO 8601).</param>
     /// <param name="updatedAt">Last update timestamp (UTC, ISO 8601).</param>
     /// <param name="folder">The validated folder name, or empty for none.</param>
-    /// <param name="tags">The validated, normalized tags.</param>
     /// <param name="bookmarked">Whether the workspace is bookmarked.</param>
     /// <returns>The entry to store.</returns>
-    public static JObject BuildEntry(JObject snapshot, string id, string name, int revision, string createdAt, string updatedAt, string folder, JArray tags, bool bookmarked)
+    public static JObject BuildEntry(JObject snapshot, string id, string name, int revision, string createdAt, string updatedAt, string folder, bool bookmarked)
     {
         return new JObject()
         {
@@ -331,7 +240,6 @@ public static class WorkspaceStore
             ["createdAt"] = createdAt,
             ["updatedAt"] = updatedAt,
             ["folder"] = folder,
-            ["tags"] = tags.DeepClone(),
             ["bookmarked"] = bookmarked,
             ["values"] = snapshot["values"].DeepClone(),
             ["groups"] = snapshot["groups"].DeepClone(),
@@ -362,51 +270,6 @@ public static class WorkspaceStore
         if (folder.Length > MaxFolderLength || HasControlCharacters(folder))
         {
             error = Error("invalid_folder", $"A folder name can be at most {MaxFolderLength} characters, with no control characters.");
-            return false;
-        }
-        return true;
-    }
-
-    /// <summary>Checks an optional tag list and normalizes it: trimmed, lowercase, no duplicates. A missing or null value means no tags.</summary>
-    /// <param name="raw">The tags token supplied by the client.</param>
-    /// <param name="tags">The normalized tags when valid.</param>
-    /// <param name="error">Set to the error object when this returns false; null otherwise.</param>
-    /// <returns>True if the tags are valid.</returns>
-    public static bool ValidateTags(JToken raw, out JArray tags, out JObject error)
-    {
-        tags = new JArray();
-        error = null;
-        if (raw == null || raw.Type == JTokenType.Null)
-        {
-            return true;
-        }
-        if (raw.Type != JTokenType.Array)
-        {
-            error = Error("invalid_tags", "'tags' must be a list of text.");
-            return false;
-        }
-        HashSet<string> seen = new();
-        foreach (JToken tag in (JArray)raw)
-        {
-            if (tag.Type != JTokenType.String)
-            {
-                error = Error("invalid_tags", "Each tag must be text.");
-                return false;
-            }
-            string text = tag.ToString().Trim().ToLowerInvariant();
-            if (text.Length < 1 || text.Length > MaxTagLength || HasControlCharacters(text))
-            {
-                error = Error("invalid_tags", $"A tag must be 1 to {MaxTagLength} characters, with no control characters.");
-                return false;
-            }
-            if (seen.Add(text))
-            {
-                tags.Add(text);
-            }
-        }
-        if (tags.Count > MaxTags)
-        {
-            error = Error("invalid_tags", $"A workspace can have at most {MaxTags} tags.");
             return false;
         }
         return true;

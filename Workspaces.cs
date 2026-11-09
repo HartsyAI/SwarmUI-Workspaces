@@ -21,9 +21,6 @@ public class Workspaces : Extension
         API.RegisterAPICall(WorkspacesAPI.WorkspacesUpdate, true, WorkspacesAPI.PermManageWorkspaces);
         API.RegisterAPICall(WorkspacesAPI.WorkspacesRename, true, WorkspacesAPI.PermManageWorkspaces);
         API.RegisterAPICall(WorkspacesAPI.WorkspacesSetMeta, true, WorkspacesAPI.PermManageWorkspaces);
-        API.RegisterAPICall(WorkspacesAPI.WorkspacesThumbnails, false, WorkspacesAPI.PermManageWorkspaces);
-        API.RegisterAPICall(WorkspacesAPI.WorkspacesSetThumbnail, true, WorkspacesAPI.PermManageWorkspaces);
         API.RegisterAPICall(WorkspacesAPI.WorkspacesDelete, true, WorkspacesAPI.PermManageWorkspaces);
-        API.RegisterAPICall(WorkspacesAPI.WorkspacesImport, true, WorkspacesAPI.PermManageWorkspaces);
     }
 }
