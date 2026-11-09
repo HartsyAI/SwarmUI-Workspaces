@@ -7,3 +7,27 @@
     align-items: center;
     margin-bottom: 0.5rem;
 }
+
+/* Notice shown above the parameters when a failed restore could not put the previous settings back. */
+.hartsy-workspaces-partial {
+    display: flex;
+    gap: 0.5rem;
+    align-items: flex-start;
+    margin-bottom: 0.5rem;
+    padding: 0.4rem 0.6rem;
+    border: 1px solid var(--border-color);
+    border-radius: 0.3rem;
+    background-color: var(--background-danger);
+    color: var(--text);
+}
+
+.hartsy-workspaces-partial-text {
+    flex: 1;
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+
+.hartsy-workspaces-partial-dismiss {
+    flex: none;
+    line-height: 1;
+}
