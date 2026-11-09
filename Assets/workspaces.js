@@ -1145,6 +1145,10 @@ class HartsyWorkspacesManager {
         }
         let plan = this.buildPlan(snapshot);
         let skipped = plan.skipped.slice();
+        if (!modelName && getRequiredElementById('input_model').value != '') {
+            // Swarm has no way to clear a model selection (directSetModel ignores an empty model), so the current model stays. Report it instead of claiming success.
+            skipped.push({ kind: 'value', id: 'model', name: 'Model', reason: 'the workspace has no model selected, so the current model was kept' });
+        }
         for (let issue of presetCheck.issues) {
             if (issue.problem == 'missing') {
                 skipped.push({ kind: 'preset', id: issue.title, name: issue.title, reason: 'this preset no longer exists' });
