@@ -66,6 +66,24 @@ class HartsyWorkspacesManager {
         this.maxNameLength = 100;
         /** Function that closes the open partial-load dialog, or null when none is open. */
         this.closeDialogHandler = null;
+        /** Pending timer for the debounced draft save, or null. */
+        this.draftTimer = null;
+        /** Timer that refreshes this tab's "still open" mark, or null. */
+        this.heartbeatTimer = null;
+        /** Wait after the last change before a draft is written, in milliseconds. */
+        this.draftDebounceMs = 2000;
+        /** How often an open tab refreshes its "still open" mark, in milliseconds. */
+        this.heartbeatMs = 5000;
+        /** A tab whose mark is older than this counts as closed, so its draft can be recovered, in milliseconds. */
+        this.staleTabMs = 20000;
+        /** True once the recovery check for drafts left by earlier page loads has run. */
+        this.recoveryChecked = false;
+        /** ID of this browser tab, kept in session storage so a reload keeps it. Null until first needed. */
+        this.tabId = null;
+        /** True once the workspace list has been fetched from the server at least once. */
+        this.listLoaded = false;
+        /** True once the Shift+S listener is attached. */
+        this.shortcutAttached = false;
         /** Readable names for the unsupported-state IDs stored in a snapshot's 'unsupported' list. */
         this.unsupportedLabels = {
             custom_workflow: 'a custom Comfy workflow',
@@ -95,7 +113,9 @@ class HartsyWorkspacesManager {
      */
     loadWorkspaces() {
         this.listWorkspaces().then(() => {
+            this.listLoaded = true;
             this.refreshToolbar();
+            this.checkRecovery();
         }).catch(error => {
             console.error('Workspaces: failed to load the workspace list.', error);
             showError(`Failed to load workspaces: ${error}`);
@@ -1344,7 +1364,7 @@ class HartsyWorkspacesManager {
             toolbar = createDiv(null, 'hartsy-workspaces-toolbar');
             toolbar.innerHTML = '<select class="hartsy-workspaces-select" title="Load a saved workspace"></select>'
                 + '<button class="basic-button hartsy-workspaces-new" title="Save the current settings as a new workspace">New</button>'
-                + '<button class="basic-button hartsy-workspaces-save" title="Save the current settings to this workspace">Save</button>'
+                + '<button class="basic-button hartsy-workspaces-save" title="Save the current settings to this workspace (Shift+S)">Save</button>'
                 + '<button class="basic-button hartsy-workspaces-saveas" title="Save the current settings as a copy">Save As</button>'
                 + '<button class="basic-button hartsy-workspaces-reload" title="Throw away unsaved changes and load the latest saved version of this workspace">Reload</button>'
                 + '<button class="basic-button hartsy-workspaces-rename" title="Rename this workspace">Rename</button>'
@@ -1396,7 +1416,10 @@ class HartsyWorkspacesManager {
             area.parentElement.insertBefore(toolbar, area);
         }
         this.attachTracking();
+        this.attachShortcut();
+        this.startHeartbeat();
         this.refreshToolbar();
+        this.checkRecovery();
         return toolbar;
     }
 
@@ -1490,6 +1513,7 @@ class HartsyWorkspacesManager {
         this.currentRevision = entry.revision;
         this.baseline = this.normalizeState(snapshot || this.captureSnapshot());
         this.modified = false;
+        this.clearDraft();
         this.refreshToolbar();
     }
 
@@ -1501,6 +1525,7 @@ class HartsyWorkspacesManager {
         this.currentRevision = null;
         this.baseline = null;
         this.modified = false;
+        this.clearDraft();
         this.refreshToolbar();
     }
 
@@ -2253,6 +2278,347 @@ class HartsyWorkspacesManager {
     }
 
     /**
+     * Reads a browser-storage value. Storage can be blocked or full, so every access is guarded.
+     * @param {string} key The storage key.
+     * @returns {string} The value, or null if missing or unavailable.
+     */
+    storageGet(key) {
+        try {
+            return localStorage.getItem(key);
+        }
+        catch (error) {
+            return null;
+        }
+    }
+
+    /**
+     * Writes a browser-storage value.
+     * @param {string} key The storage key.
+     * @param {string} value The value.
+     * @returns {boolean} True if it was stored.
+     */
+    storageSet(key, value) {
+        try {
+            localStorage.setItem(key, value);
+            return true;
+        }
+        catch (error) {
+            return false;
+        }
+    }
+
+    /**
+     * Removes a browser-storage value, ignoring failures.
+     * @param {string} key The storage key.
+     */
+    storageRemove(key) {
+        try {
+            localStorage.removeItem(key);
+        }
+        catch (error) {
+            // Nothing to do: storage is unavailable.
+        }
+    }
+
+    /**
+     * Builds a storage key scoped to this server and user, so drafts from other servers or accounts never mix.
+     * @param {string} kind 'draft' or 'alive'.
+     * @param {string} tabId The tab the key belongs to.
+     * @returns {string} The key.
+     */
+    scopeKey(kind, tabId) {
+        return `${this.scopePrefix()}${kind}:${tabId}`;
+    }
+
+    /**
+     * Returns the storage key prefix shared by all of this server-and-user's draft and tab keys.
+     * @returns {string} The prefix.
+     */
+    scopePrefix() {
+        return `hartsy_workspaces:${location.origin}:${typeof user_id != 'undefined' && user_id ? user_id : ''}:`;
+    }
+
+    /**
+     * Returns this tab's ID. It is kept in session storage, so a reload keeps it and a new tab gets its own.
+     * A duplicated tab copies session storage, so an ID whose tab is still marked open gets replaced.
+     * @returns {string} The tab ID.
+     */
+    getTabId() {
+        if (this.tabId) {
+            return this.tabId;
+        }
+        let id = null;
+        try {
+            id = sessionStorage.getItem('hartsy_workspaces_tab');
+        }
+        catch (error) {
+            id = null;
+        }
+        if (id) {
+            let alive = parseInt(this.storageGet(this.scopeKey('alive', id)) || '0');
+            if (Date.now() - alive < this.staleTabMs) {
+                id = null;
+            }
+        }
+        if (!id) {
+            id = typeof crypto != 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+            try {
+                sessionStorage.setItem('hartsy_workspaces_tab', id);
+            }
+            catch (error) {
+                // Session storage is blocked: the ID just lasts for this page load.
+            }
+        }
+        this.tabId = id;
+        return id;
+    }
+
+    /**
+     * Starts marking this tab as open every few seconds, so other tabs can tell a closed tab's draft from a live tab's. Safe to call repeatedly.
+     */
+    startHeartbeat() {
+        if (this.heartbeatTimer) {
+            return;
+        }
+        let key = this.scopeKey('alive', this.getTabId());
+        let beat = () => {
+            this.storageSet(key, `${Date.now()}`);
+        };
+        beat();
+        this.heartbeatTimer = setInterval(beat, this.heartbeatMs);
+        window.addEventListener('pagehide', () => {
+            this.storageRemove(key);
+        });
+    }
+
+    /**
+     * Schedules a debounced save of this tab's draft: the current unsaved settings of the current workspace.
+     */
+    scheduleDraftSave() {
+        if (this.draftTimer) {
+            clearTimeout(this.draftTimer);
+        }
+        this.draftTimer = setTimeout(() => {
+            this.draftTimer = null;
+            this.saveDraft();
+        }, this.draftDebounceMs);
+    }
+
+    /**
+     * Writes this tab's draft to browser storage, if the settings still differ from the current workspace. Other tabs' drafts are never touched.
+     */
+    saveDraft() {
+        let entry = this.getCurrentEntry();
+        if (!entry || this.baseline == null || this.restoring || this.busy || !this.isReady()) {
+            return;
+        }
+        let snapshot;
+        try {
+            snapshot = this.captureSnapshot();
+        }
+        catch (error) {
+            console.error('Workspaces: could not read the settings for a draft.', error);
+            return;
+        }
+        if (this.normalizeState(snapshot) == this.baseline) {
+            return;
+        }
+        let record = { tabId: this.getTabId(), workspaceId: entry.id, workspaceName: entry.name, revision: this.currentRevision, savedAt: Date.now(), snapshot: snapshot };
+        if (!this.storageSet(this.scopeKey('draft', this.getTabId()), JSON.stringify(record))) {
+            this.setStatus('Could not keep a draft of your unsaved changes: browser storage is full or blocked.');
+        }
+    }
+
+    /**
+     * Removes this tab's draft and cancels any pending draft save. Used whenever the settings match a workspace again.
+     */
+    clearDraft() {
+        if (this.draftTimer) {
+            clearTimeout(this.draftTimer);
+            this.draftTimer = null;
+        }
+        let key = this.scopeKey('draft', this.getTabId());
+        if (this.storageGet(key) != null) {
+            this.storageRemove(key);
+        }
+    }
+
+    /**
+     * Lists drafts that can be recovered: this tab's own draft from before a reload, and drafts of tabs that are no longer open. Newest first.
+     * @returns {Array<Object>} Draft records, each with a 'key' field naming its storage entry.
+     */
+    findDrafts() {
+        let prefix = this.scopePrefix();
+        let ownKey = this.scopeKey('draft', this.getTabId());
+        let found = [];
+        let keys = [];
+        try {
+            for (let i = 0; i < localStorage.length; i++) {
+                let key = localStorage.key(i);
+                if (key && key.startsWith(`${prefix}draft:`)) {
+                    keys.push(key);
+                }
+            }
+        }
+        catch (error) {
+            return [];
+        }
+        for (let key of keys) {
+            let record;
+            try {
+                record = JSON.parse(this.storageGet(key));
+            }
+            catch (error) {
+                record = null;
+            }
+            if (!this.isPlainObject(record) || typeof record.tabId != 'string' || !this.isPlainObject(record.snapshot)) {
+                this.storageRemove(key);
+                continue;
+            }
+            if (key != ownKey) {
+                let alive = parseInt(this.storageGet(this.scopeKey('alive', record.tabId)) || '0');
+                if (Date.now() - alive < this.staleTabMs) {
+                    continue;
+                }
+            }
+            record.key = key;
+            found.push(record);
+        }
+        found.sort((a, b) => (b.savedAt || 0) - (a.savedAt || 0));
+        return found;
+    }
+
+    /**
+     * Runs the recovery check once, when the toolbar and the workspace list are both ready.
+     */
+    checkRecovery() {
+        if (this.recoveryChecked || !this.listLoaded || !this.isReady() || !document.querySelector('.hartsy-workspaces-toolbar')) {
+            return;
+        }
+        this.recoveryChecked = true;
+        this.showRecovery();
+    }
+
+    /**
+     * Shows a notice in the toolbar for the newest recoverable draft, with Restore and Discard. Removes the notice when there is none.
+     */
+    showRecovery() {
+        let toolbar = document.querySelector('.hartsy-workspaces-toolbar');
+        if (!toolbar) {
+            return;
+        }
+        for (let old of toolbar.querySelectorAll('.hartsy-workspaces-recover')) {
+            old.remove();
+        }
+        let drafts = this.findDrafts();
+        if (drafts.length == 0) {
+            return;
+        }
+        let draft = drafts[0];
+        let banner = createDiv(null, 'hartsy-workspaces-recover');
+        let text = document.createElement('span');
+        text.className = 'hartsy-workspaces-recover-text';
+        let more = drafts.length > 1 ? ` (${drafts.length - 1} more after this)` : '';
+        text.textContent = `Unsaved changes to "${draft.workspaceName || 'a workspace'}" from ${new Date(draft.savedAt).toLocaleString()} were found${more}.`;
+        banner.append(text);
+        let restore = document.createElement('button');
+        restore.className = 'basic-button';
+        restore.textContent = 'Restore';
+        restore.addEventListener('click', () => {
+            this.recoverDraft(draft);
+        });
+        banner.append(restore);
+        let discard = document.createElement('button');
+        discard.className = 'basic-button';
+        discard.textContent = 'Discard';
+        discard.addEventListener('click', () => {
+            this.storageRemove(draft.key);
+            this.showRecovery();
+        });
+        banner.append(discard);
+        toolbar.append(banner);
+    }
+
+    /**
+     * Restores a recovered draft. If its workspace still exists, that workspace is loaded first, so the draft shows as unsaved changes to it. Named workspaces are never overwritten by recovery.
+     * @param {Object} draft The draft record from findDrafts.
+     */
+    async recoverDraft(draft) {
+        if (this.busy || this.restoring) {
+            return;
+        }
+        let entry = draft.workspaceId ? this.workspaces.find(w => w.id == draft.workspaceId) : null;
+        if (entry) {
+            await this.loadWorkspace(entry.id);
+            if (this.currentId != entry.id) {
+                // The load was refused or cancelled; the draft stays so it can be recovered later.
+                return;
+            }
+        }
+        let result;
+        this.setBusy(true);
+        try {
+            result = await this.applySnapshot(draft.snapshot);
+        }
+        finally {
+            this.setBusy(false);
+        }
+        if (result.status != 'success' && result.status != 'incomplete') {
+            return;
+        }
+        this.storageRemove(draft.key);
+        if (!entry) {
+            this.setStatus('Restored the draft. Its workspace no longer exists, so these settings are not attached to one. Use Save As to keep them.');
+        }
+        else if (entry.revision != draft.revision) {
+            this.setStatus(`Restored the draft. "${entry.name}" was saved elsewhere after this draft was made, so saving now replaces that newer version.`);
+        }
+        else {
+            this.setStatus('Restored the draft.');
+        }
+        this.showRecovery();
+    }
+
+    /**
+     * Attaches the Shift+S save shortcut. Safe to call repeatedly.
+     */
+    attachShortcut() {
+        if (this.shortcutAttached) {
+            return;
+        }
+        this.shortcutAttached = true;
+        document.addEventListener('keydown', event => {
+            this.onShortcut(event);
+        });
+    }
+
+    /**
+     * Handles Shift+S: saves the current workspace. Ignored while typing, composing text, or when another dialog or the image editor is in use.
+     * @param {KeyboardEvent} event The key event.
+     */
+    onShortcut(event) {
+        if (event.code != 'KeyS' || !event.shiftKey || event.ctrlKey || event.metaKey || event.altKey || event.isComposing || event.repeat) {
+            return;
+        }
+        let target = event.target;
+        if (target && (target.isContentEditable || (target.closest && target.closest('input, textarea, select, [contenteditable=""], [contenteditable="true"]')))) {
+            return;
+        }
+        if (this.closeDialogHandler || this.busy || this.restoring || document.querySelector('.modal.show')) {
+            return;
+        }
+        let area = document.getElementById('main_inputs_area');
+        if (!area || area.offsetParent == null) {
+            return;
+        }
+        if (typeof imageEditor != 'undefined' && imageEditor && imageEditor.active) {
+            return;
+        }
+        event.preventDefault();
+        this.saveCurrent();
+    }
+
+    /**
      * Attaches the page-wide listeners that notice parameter changes. Safe to call repeatedly.
      * Listeners are capturing, because Swarm's programmatic change events do not bubble, and on the document, so they survive parameter rebuilds.
      */
@@ -2314,6 +2680,12 @@ class HartsyWorkspacesManager {
             return;
         }
         let changed = state != this.baseline;
+        if (changed) {
+            this.scheduleDraftSave();
+        }
+        else {
+            this.clearDraft();
+        }
         if (changed != this.modified) {
             this.modified = changed;
             this.refreshToolbar();
