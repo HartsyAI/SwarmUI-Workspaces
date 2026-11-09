@@ -13,6 +13,7 @@ The toolbar sits above the parameter list on the Generate tab:
 - **Dropdown**: pick a workspace to load it. A load replaces your current settings completely. If the current workspace has unsaved changes, you are asked first.
 - **New** saves the current settings as a new workspace. **Save As** does the same, starting from "<name> copy".
 - **Save** writes the current settings into the selected workspace. If it was changed elsewhere, nothing is overwritten and you are told.
+- **Reload** throws away unsaved changes and loads the latest saved version of the selected workspace, for example after it was changed elsewhere.
 - **Rename** and **Delete** act on the selected workspace. Delete leaves your settings as they are.
 - **Modified** appears when the settings differ from the selected workspace, and goes away only after a successful save or load.
 

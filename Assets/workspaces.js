@@ -1334,6 +1334,7 @@ class HartsyWorkspacesManager {
                 + '<button class="basic-button hartsy-workspaces-new" title="Save the current settings as a new workspace">New</button>'
                 + '<button class="basic-button hartsy-workspaces-save" title="Save the current settings to this workspace">Save</button>'
                 + '<button class="basic-button hartsy-workspaces-saveas" title="Save the current settings as a copy">Save As</button>'
+                + '<button class="basic-button hartsy-workspaces-reload" title="Throw away unsaved changes and load the latest saved version of this workspace">Reload</button>'
                 + '<button class="basic-button hartsy-workspaces-rename" title="Rename this workspace">Rename</button>'
                 + '<button class="basic-button hartsy-workspaces-delete" title="Delete this workspace">Delete</button>'
                 + '<span class="hartsy-workspaces-modified" title="The settings differ from the saved workspace" hidden>● Modified</span>';
@@ -1348,6 +1349,11 @@ class HartsyWorkspacesManager {
             });
             toolbar.querySelector('.hartsy-workspaces-saveas').addEventListener('click', () => {
                 this.saveNew(true);
+            });
+            toolbar.querySelector('.hartsy-workspaces-reload').addEventListener('click', () => {
+                if (this.currentId) {
+                    this.loadWorkspace(this.currentId);
+                }
             });
             toolbar.querySelector('.hartsy-workspaces-rename').addEventListener('click', () => {
                 this.renameCurrent();
@@ -1391,6 +1397,7 @@ class HartsyWorkspacesManager {
         toolbar.querySelector('.hartsy-workspaces-new').disabled = this.busy;
         toolbar.querySelector('.hartsy-workspaces-save').disabled = this.busy;
         toolbar.querySelector('.hartsy-workspaces-saveas').disabled = this.busy;
+        toolbar.querySelector('.hartsy-workspaces-reload').disabled = this.busy || !hasCurrent;
         toolbar.querySelector('.hartsy-workspaces-rename').disabled = this.busy || !hasCurrent;
         toolbar.querySelector('.hartsy-workspaces-delete').disabled = this.busy || !hasCurrent;
         toolbar.querySelector('.hartsy-workspaces-modified').hidden = !(hasCurrent && this.modified);
@@ -1488,7 +1495,9 @@ class HartsyWorkspacesManager {
         this.updateModified();
         if (this.modified) {
             let current = this.getCurrentEntry();
-            if (!confirm(`"${current ? current.name : 'The current workspace'}" has unsaved changes. Load another workspace and discard them?`)) {
+            let name = current ? current.name : 'The current workspace';
+            let question = id == this.currentId ? `"${name}" has unsaved changes. Reload the saved version and discard them?` : `"${name}" has unsaved changes. Load another workspace and discard them?`;
+            if (!confirm(question)) {
                 this.refreshToolbar();
                 return;
             }
