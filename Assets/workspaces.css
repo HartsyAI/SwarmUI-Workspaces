@@ -8,6 +8,27 @@
     margin-bottom: 0.5rem;
 }
 
+.hartsy-workspaces-select {
+    flex: 1 1 8rem;
+    min-width: 0;
+    max-width: 100%;
+}
+
+.hartsy-workspaces-toolbar .basic-button {
+    flex: none;
+}
+
+.hartsy-workspaces-modified {
+    flex: none;
+    font-size: 0.85em;
+    color: var(--emphasis);
+    white-space: nowrap;
+}
+
+.hartsy-workspaces-modified[hidden] {
+    display: none;
+}
+
 /* Notice shown above the parameters when a failed restore could not put the previous settings back. */
 .hartsy-workspaces-partial {
     display: flex;

@@ -4,7 +4,21 @@ A SwarmUI extension for saving and restoring named workspaces: snapshots of your
 
 ## Status
 
-In development. The server API (create, update, rename, delete, import) is in place. The Generate-tab toolbar and load/save UI are not built yet.
+In development. Working now: the server API (create, update, rename, delete, import), capturing and restoring the Generate tab, and a toolbar above the parameters. Not built yet: partial load, JSON export and import in the UI, folders and tags, drafts.
+
+## Using it
+
+The toolbar sits above the parameter list on the Generate tab:
+
+- **Dropdown**: pick a workspace to load it. A load replaces your current settings completely. If the current workspace has unsaved changes, you are asked first.
+- **New** saves the current settings as a new workspace. **Save As** does the same, starting from "<name> copy".
+- **Save** writes the current settings into the selected workspace. If it was changed elsewhere, nothing is overwritten and you are told.
+- **Rename** and **Delete** act on the selected workspace. Delete leaves your settings as they are.
+- **Modified** appears when the settings differ from the selected workspace, and goes away only after a successful save or load.
+
+![Toolbar with unsaved changes](docs/images/toolbar-modified.png)
+
+![Toolbar after saving](docs/images/toolbar-saved.png)
 
 ## Installation
 
