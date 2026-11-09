@@ -138,3 +138,23 @@
     gap: 0.5rem;
     justify-content: flex-end;
 }
+
+/* Notice offering to restore unsaved changes found after a reload or a closed tab. */
+.hartsy-workspaces-recover {
+    display: flex;
+    flex-basis: 100%;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    align-items: center;
+    padding: 0.4rem 0.6rem;
+    border: 1px solid var(--border-color);
+    border-radius: 0.3rem;
+    background-color: var(--background-soft);
+    color: var(--text);
+}
+
+.hartsy-workspaces-recover-text {
+    flex: 1 1 12rem;
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
