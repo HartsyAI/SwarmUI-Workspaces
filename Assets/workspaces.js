@@ -82,6 +82,12 @@ class HartsyWorkspacesManager {
         this.tabId = null;
         /** True once the workspace list has been fetched from the server at least once. */
         this.listLoaded = false;
+        /** Milliseconds until the soonest skipped draft's tab mark goes stale, or null when no draft was skipped. Set by findDrafts. */
+        this.nextDraftRecheckMs = null;
+        /** Pending timer that re-runs the recovery check when a skipped draft's tab mark goes stale, or null. */
+        this.recheckTimer = null;
+        /** Identifies the drafts the recovery notice currently shows, so an unchanged notice is not rebuilt. */
+        this.recoverySignature = '';
         /** True once the Shift+S listener is attached. */
         this.shortcutAttached = false;
         /** Readable names for the unsupported-state IDs stored in a snapshot's 'unsupported' list. */
@@ -2453,6 +2459,7 @@ class HartsyWorkspacesManager {
     findDrafts() {
         let prefix = this.scopePrefix();
         let ownKey = this.scopeKey('draft', this.getTabId());
+        this.nextDraftRecheckMs = null;
         let found = [];
         let keys = [];
         try {
@@ -2483,7 +2490,11 @@ class HartsyWorkspacesManager {
                 continue;
             }
             let alive = parseInt(this.storageGet(this.scopeKey('alive', record.tabId)) || '0');
-            if (Date.now() - alive < this.staleTabMs) {
+            let remaining = this.staleTabMs - (Date.now() - alive);
+            if (remaining > 0) {
+                if (this.nextDraftRecheckMs == null || remaining < this.nextDraftRecheckMs) {
+                    this.nextDraftRecheckMs = remaining;
+                }
                 continue;
             }
             record.key = key;
@@ -2540,10 +2551,27 @@ class HartsyWorkspacesManager {
         if (!toolbar) {
             return;
         }
-        for (let old of toolbar.querySelectorAll('.hartsy-workspaces-recover')) {
+        let drafts = this.findDrafts();
+        // A draft whose tab still looks open (for example one that crashed moments ago) is skipped for now. Look again once its mark goes stale.
+        if (this.recheckTimer) {
+            clearTimeout(this.recheckTimer);
+            this.recheckTimer = null;
+        }
+        if (this.nextDraftRecheckMs != null) {
+            this.recheckTimer = setTimeout(() => {
+                this.recheckTimer = null;
+                this.showRecovery();
+            }, this.nextDraftRecheckMs + 1000);
+        }
+        let signature = drafts.map(d => `${d.key}@${d.savedAt}`).join('|');
+        let existing = toolbar.querySelectorAll('.hartsy-workspaces-recover');
+        if (existing.length > 0 && signature == this.recoverySignature) {
+            return;
+        }
+        this.recoverySignature = signature;
+        for (let old of existing) {
             old.remove();
         }
-        let drafts = this.findDrafts();
         if (drafts.length == 0) {
             return;
         }
@@ -2608,11 +2636,13 @@ class HartsyWorkspacesManager {
             return;
         }
         this.storageRemove(draft.key);
+        // loadWorkspace refreshed the list, so compare with the entry and revision that were actually loaded, not the cached one from before.
+        let loaded = entry ? this.getCurrentEntry() : null;
         if (!entry) {
             this.setStatus('Restored the draft. Its workspace no longer exists, so these settings are not attached to one. Use Save As to keep them.');
         }
-        else if (entry.revision != draft.revision) {
-            this.setStatus(`Restored the draft. "${entry.name}" was saved elsewhere after this draft was made, so saving now replaces that newer version.`);
+        else if (loaded && this.currentRevision != draft.revision) {
+            this.setStatus(`Restored the draft. "${loaded.name}" was saved elsewhere after this draft was made, so saving now replaces that newer version.`);
         }
         else {
             this.setStatus('Restored the draft.');
