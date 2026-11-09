@@ -36,6 +36,15 @@ public static class WorkspaceStore
     /// <summary>Maximum number of workspaces accepted by one import.</summary>
     public const int MaxImportCount = 200;
 
+    /// <summary>Maximum folder name length, in characters.</summary>
+    public const int MaxFolderLength = 100;
+
+    /// <summary>Maximum number of tags on one workspace.</summary>
+    public const int MaxTags = 20;
+
+    /// <summary>Maximum tag length, in characters.</summary>
+    public const int MaxTagLength = 40;
+
     /// <summary>Per-user lock objects, keyed by user ID.</summary>
     private static readonly ConcurrentDictionary<string, object> UserLocks = new();
 
@@ -219,24 +228,144 @@ public static class WorkspaceStore
         return true;
     }
 
-    /// <summary>Builds a stored entry from a validated snapshot and server-owned metadata.</summary>
-    /// <param name="snapshot">The validated snapshot. Its id, name, revision, and timestamps are replaced.</param>
+    /// <summary>Builds a stored entry from a validated snapshot and server-owned metadata. Only known fields are copied, so anything else in the input is dropped.</summary>
+    /// <param name="snapshot">The validated snapshot. Only its values, groups, presets, and unsupported fields are used.</param>
     /// <param name="id">Server-assigned workspace ID.</param>
     /// <param name="name">The trimmed workspace name.</param>
     /// <param name="revision">The revision to store.</param>
     /// <param name="createdAt">Creation timestamp (UTC, ISO 8601).</param>
     /// <param name="updatedAt">Last update timestamp (UTC, ISO 8601).</param>
+    /// <param name="folder">The validated folder name, or empty for none.</param>
+    /// <param name="tags">The validated, normalized tags.</param>
+    /// <param name="bookmarked">Whether the workspace is bookmarked.</param>
     /// <returns>The entry to store.</returns>
-    public static JObject BuildEntry(JObject snapshot, string id, string name, int revision, string createdAt, string updatedAt)
+    public static JObject BuildEntry(JObject snapshot, string id, string name, int revision, string createdAt, string updatedAt, string folder, JArray tags, bool bookmarked)
     {
-        JObject entry = (JObject)snapshot.DeepClone();
-        entry["schemaVersion"] = CurrentSchemaVersion;
-        entry["id"] = id;
-        entry["name"] = name;
-        entry["revision"] = revision;
-        entry["createdAt"] = createdAt;
-        entry["updatedAt"] = updatedAt;
-        return entry;
+        return new JObject()
+        {
+            ["schemaVersion"] = CurrentSchemaVersion,
+            ["id"] = id,
+            ["name"] = name,
+            ["revision"] = revision,
+            ["createdAt"] = createdAt,
+            ["updatedAt"] = updatedAt,
+            ["folder"] = folder,
+            ["tags"] = tags.DeepClone(),
+            ["bookmarked"] = bookmarked,
+            ["values"] = snapshot["values"].DeepClone(),
+            ["groups"] = snapshot["groups"].DeepClone(),
+            ["presets"] = snapshot["presets"].DeepClone(),
+            ["unsupported"] = snapshot["unsupported"].DeepClone()
+        };
+    }
+
+    /// <summary>Checks an optional folder name. A missing or null value means no folder.</summary>
+    /// <param name="raw">The folder token supplied by the client.</param>
+    /// <param name="folder">The trimmed folder name when valid (empty for none).</param>
+    /// <param name="error">Set to the error object when this returns false; null otherwise.</param>
+    /// <returns>True if the folder is valid.</returns>
+    public static bool ValidateFolder(JToken raw, out string folder, out JObject error)
+    {
+        folder = "";
+        error = null;
+        if (raw == null || raw.Type == JTokenType.Null)
+        {
+            return true;
+        }
+        if (raw.Type != JTokenType.String)
+        {
+            error = Error("invalid_folder", "'folder' must be text.");
+            return false;
+        }
+        folder = raw.ToString().Trim();
+        if (folder.Length > MaxFolderLength || HasControlCharacters(folder))
+        {
+            error = Error("invalid_folder", $"A folder name can be at most {MaxFolderLength} characters, with no control characters.");
+            return false;
+        }
+        return true;
+    }
+
+    /// <summary>Checks an optional tag list and normalizes it: trimmed, lowercase, no duplicates. A missing or null value means no tags.</summary>
+    /// <param name="raw">The tags token supplied by the client.</param>
+    /// <param name="tags">The normalized tags when valid.</param>
+    /// <param name="error">Set to the error object when this returns false; null otherwise.</param>
+    /// <returns>True if the tags are valid.</returns>
+    public static bool ValidateTags(JToken raw, out JArray tags, out JObject error)
+    {
+        tags = new JArray();
+        error = null;
+        if (raw == null || raw.Type == JTokenType.Null)
+        {
+            return true;
+        }
+        if (raw.Type != JTokenType.Array)
+        {
+            error = Error("invalid_tags", "'tags' must be a list of text.");
+            return false;
+        }
+        HashSet<string> seen = new();
+        foreach (JToken tag in (JArray)raw)
+        {
+            if (tag.Type != JTokenType.String)
+            {
+                error = Error("invalid_tags", "Each tag must be text.");
+                return false;
+            }
+            string text = tag.ToString().Trim().ToLowerInvariant();
+            if (text.Length < 1 || text.Length > MaxTagLength || HasControlCharacters(text))
+            {
+                error = Error("invalid_tags", $"A tag must be 1 to {MaxTagLength} characters, with no control characters.");
+                return false;
+            }
+            if (seen.Add(text))
+            {
+                tags.Add(text);
+            }
+        }
+        if (tags.Count > MaxTags)
+        {
+            error = Error("invalid_tags", $"A workspace can have at most {MaxTags} tags.");
+            return false;
+        }
+        return true;
+    }
+
+    /// <summary>Checks an optional bookmark flag. A missing or null value means not bookmarked.</summary>
+    /// <param name="raw">The bookmark token supplied by the client.</param>
+    /// <param name="bookmarked">The flag when valid.</param>
+    /// <param name="error">Set to the error object when this returns false; null otherwise.</param>
+    /// <returns>True if the flag is valid.</returns>
+    public static bool ValidateBookmarked(JToken raw, out bool bookmarked, out JObject error)
+    {
+        bookmarked = false;
+        error = null;
+        if (raw == null || raw.Type == JTokenType.Null)
+        {
+            return true;
+        }
+        if (raw.Type != JTokenType.Boolean)
+        {
+            error = Error("invalid_bookmark", "'bookmarked' must be true or false.");
+            return false;
+        }
+        bookmarked = raw.Value<bool>();
+        return true;
+    }
+
+    /// <summary>Returns whether text contains any control character.</summary>
+    /// <param name="text">The text to check.</param>
+    /// <returns>True if a control character is present.</returns>
+    private static bool HasControlCharacters(string text)
+    {
+        foreach (char c in text)
+        {
+            if (char.IsControl(c))
+            {
+                return true;
+            }
+        }
+        return false;
     }
 
     /// <summary>Checks that a token is an object whose entries are objects with a boolean 'enabled' field.</summary>

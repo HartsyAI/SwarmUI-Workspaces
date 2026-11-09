@@ -4,7 +4,7 @@ A SwarmUI extension for saving and restoring named workspaces: snapshots of your
 
 ## Status
 
-In development. Working now: the server API (create, update, rename, delete, import), capturing and restoring the Generate tab, and a toolbar above the parameters. Also working: partial load, and JSON export and import. Not built yet: folders and tags, drafts.
+In development. Working now: the server API (create, update, rename, delete, import), capturing and restoring the Generate tab, and a toolbar above the parameters. Also working: partial load, JSON export and import, folders, tags, search and bookmarks, drafts, and the Shift+S shortcut. Not built yet: thumbnails.
 
 ## Using it
 
@@ -18,12 +18,15 @@ The toolbar sits above the parameter list on the Generate tab:
 - **Export** downloads the saved version of the selected workspace as a JSON file, and **Export All** downloads every workspace. **Import** adds the workspaces from such a file. The whole file is checked first, and either every workspace is added or none are. Imported workspaces get fresh IDs, and a name that is already taken gets a number added.
 - **Shift+S** saves, like the Save button. It does nothing while you are typing in a field, and while a dialog or the image editor is open.
 - **Drafts**: while the selected workspace has unsaved changes, a draft of them is kept in your browser a couple of seconds after each change. If you reload the page or close the tab, a notice at the top of the toolbar offers to **Restore** or **Discard** it. Restoring loads the workspace first and then puts the draft on top, so it shows as unsaved changes and never overwrites the saved workspace. Each browser tab keeps its own draft, and a draft from a tab that is still open is never offered.
+- **Bookmark** lists the selected workspace first, under "Bookmarked". **Folder / Tags...** sets a folder and comma-separated tags (lowercased, at most 20 tags of 40 characters, folder name at most 100). The dropdown groups workspaces by bookmark, then folder, then "Unfiled". **Search** filters the dropdown by name, folder, or tag, and always keeps the selected workspace listed. Saving settings never changes a workspace's folder, tags, or bookmark, and Save As copies the folder and tags but not the bookmark. Folders, tags, and bookmarks travel in export files.
 - **Rename** and **Delete** act on the selected workspace. Delete leaves your settings as they are.
 - **Modified** appears when the settings differ from the selected workspace, and goes away only after a successful save or load.
 
 ![Toolbar with unsaved changes](docs/images/toolbar-modified.png)
 
 ![Toolbar after saving](docs/images/toolbar-saved.png)
+
+![Toolbar with bookmark, folder and tag controls, and search](docs/images/toolbar-organized.png)
 
 ![Partial load dialog](docs/images/partial-load-dialog.jpg)
 

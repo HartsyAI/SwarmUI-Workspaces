@@ -25,9 +25,9 @@ public static class WorkspacesAPI
     }
 
     /// <summary>Creates a workspace from a snapshot. The server assigns the ID, revision 1, and timestamps.</summary>
-    [API.APIDescription("Creates a workspace. Send 'name' (string) and 'snapshot' (object, schema version 1). Returns the stored workspace.", "\"success\": true, \"workspace\": { \"id\": \"abc123\", \"revision\": 1 }")]
+    [API.APIDescription("Creates a workspace. Send 'name' (string) and 'snapshot' (object, schema version 1), and optionally 'folder' (string), 'tags' (string list), and 'bookmarked' (bool). Returns the stored workspace.", "\"success\": true, \"workspace\": { \"id\": \"abc123\", \"revision\": 1 }")]
     public static Task<JObject> WorkspacesCreate(Session session,
-        [API.APIParameter("Raw body: 'name' (string) and 'snapshot' (object).")] JObject raw)
+        [API.APIParameter("Raw body: 'name' (string), 'snapshot' (object), and optional 'folder', 'tags', 'bookmarked'.")] JObject raw)
     {
         if (!WorkspaceStore.ValidateName(raw["name"]?.ToString(), out string name, out JObject nameError))
         {
@@ -36,6 +36,18 @@ public static class WorkspacesAPI
         if (!WorkspaceStore.ValidateSnapshot(raw["snapshot"], out JObject snapError))
         {
             return Task.FromResult(snapError);
+        }
+        if (!WorkspaceStore.ValidateFolder(raw["folder"], out string folder, out JObject folderError))
+        {
+            return Task.FromResult(folderError);
+        }
+        if (!WorkspaceStore.ValidateTags(raw["tags"], out JArray tags, out JObject tagsError))
+        {
+            return Task.FromResult(tagsError);
+        }
+        if (!WorkspaceStore.ValidateBookmarked(raw["bookmarked"], out bool bookmarked, out JObject bookmarkError))
+        {
+            return Task.FromResult(bookmarkError);
         }
         JObject snapshot = (JObject)raw["snapshot"];
         lock (WorkspaceStore.GetLock(session.User))
@@ -46,7 +58,7 @@ public static class WorkspacesAPI
                 return Task.FromResult(WorkspaceStore.Error("quota_exceeded", $"You can store at most {WorkspaceStore.MaxWorkspaces} workspaces."));
             }
             string now = DateTime.UtcNow.ToString("o");
-            JObject entry = WorkspaceStore.BuildEntry(snapshot, Guid.NewGuid().ToString("N"), name, 1, now, now);
+            JObject entry = WorkspaceStore.BuildEntry(snapshot, Guid.NewGuid().ToString("N"), name, 1, now, now, folder, tags, bookmarked);
             list.Add(entry);
             if (!WorkspaceStore.TrySave(session.User, list, out JObject saveError))
             {
@@ -84,7 +96,11 @@ public static class WorkspacesAPI
             }
             JObject current = (JObject)list[index];
             string now = DateTime.UtcNow.ToString("o");
-            JObject entry = WorkspaceStore.BuildEntry(snapshot, id, name, revision + 1, current["createdAt"]?.ToString() ?? now, now);
+            // Saving settings keeps the workspace's organization (folder, tags, bookmark) as it is.
+            string folder = current["folder"]?.ToString() ?? "";
+            JArray tags = current["tags"] as JArray ?? new JArray();
+            bool bookmarked = current["bookmarked"]?.Type == JTokenType.Boolean && current["bookmarked"].Value<bool>();
+            JObject entry = WorkspaceStore.BuildEntry(snapshot, id, name, revision + 1, current["createdAt"]?.ToString() ?? now, now, folder, tags, bookmarked);
             list[index] = entry;
             if (!WorkspaceStore.TrySave(session.User, list, out JObject saveError))
             {
@@ -114,6 +130,64 @@ public static class WorkspacesAPI
             }
             JObject current = (JObject)list[index];
             current["name"] = trimmed;
+            current["revision"] = revision + 1;
+            current["updatedAt"] = DateTime.UtcNow.ToString("o");
+            if (!WorkspaceStore.TrySave(session.User, list, out JObject saveError))
+            {
+                return Task.FromResult(saveError);
+            }
+            return Task.FromResult(new JObject() { ["success"] = true, ["revision"] = revision + 1 });
+        }
+    }
+
+    /// <summary>Sets a workspace's folder, tags, and bookmark without touching its saved settings. The revision must match. Fields left out are unchanged.</summary>
+    [API.APIDescription("Sets a workspace's folder, tags, and bookmark. Send 'id', 'revision', and any of 'folder' (string), 'tags' (string list), 'bookmarked' (bool); fields left out are unchanged. Returns the new revision.", "\"success\": true, \"revision\": 2")]
+    public static Task<JObject> WorkspacesSetMeta(Session session,
+        [API.APIParameter("Raw body: 'id' (string), 'revision' (int), and any of 'folder', 'tags', 'bookmarked'.")] JObject raw)
+    {
+        string id = raw["id"]?.ToString() ?? "";
+        if (!ReadInt(raw["revision"], out int revision))
+        {
+            return Task.FromResult(WorkspaceStore.Error("invalid_revision", "'revision' must be an integer."));
+        }
+        string folder = "";
+        JArray tags = null;
+        bool bookmarked = false;
+        bool hasFolder = raw.ContainsKey("folder");
+        bool hasTags = raw.ContainsKey("tags");
+        bool hasBookmarked = raw.ContainsKey("bookmarked");
+        if (hasFolder && !WorkspaceStore.ValidateFolder(raw["folder"], out folder, out JObject folderError))
+        {
+            return Task.FromResult(folderError);
+        }
+        if (hasTags && !WorkspaceStore.ValidateTags(raw["tags"], out tags, out JObject tagsError))
+        {
+            return Task.FromResult(tagsError);
+        }
+        if (hasBookmarked && !WorkspaceStore.ValidateBookmarked(raw["bookmarked"], out bookmarked, out JObject bookmarkError))
+        {
+            return Task.FromResult(bookmarkError);
+        }
+        lock (WorkspaceStore.GetLock(session.User))
+        {
+            JArray list = WorkspaceStore.Load(session.User);
+            if (!WorkspaceStore.FindChecked(list, id, revision, out int index, out JObject findError))
+            {
+                return Task.FromResult(findError);
+            }
+            JObject current = (JObject)list[index];
+            if (hasFolder)
+            {
+                current["folder"] = folder;
+            }
+            if (hasTags)
+            {
+                current["tags"] = tags;
+            }
+            if (hasBookmarked)
+            {
+                current["bookmarked"] = bookmarked;
+            }
             current["revision"] = revision + 1;
             current["updatedAt"] = DateTime.UtcNow.ToString("o");
             if (!WorkspaceStore.TrySave(session.User, list, out JObject saveError))
@@ -160,6 +234,9 @@ public static class WorkspacesAPI
             return Task.FromResult(WorkspaceStore.Error("quota_exceeded", $"An import can contain at most {WorkspaceStore.MaxImportCount} workspaces."));
         }
         string[] names = new string[incoming.Count];
+        string[] folders = new string[incoming.Count];
+        JArray[] tagLists = new JArray[incoming.Count];
+        bool[] bookmarks = new bool[incoming.Count];
         for (int i = 0; i < incoming.Count; i++)
         {
             if (!WorkspaceStore.ValidateName(incoming[i]["name"]?.ToString(), out names[i], out JObject nameError))
@@ -169,6 +246,18 @@ public static class WorkspacesAPI
             if (!WorkspaceStore.ValidateSnapshot(incoming[i], out JObject snapError))
             {
                 return Task.FromResult(MarkImportEntry(snapError, i));
+            }
+            if (!WorkspaceStore.ValidateFolder(incoming[i]["folder"], out folders[i], out JObject folderError))
+            {
+                return Task.FromResult(MarkImportEntry(folderError, i));
+            }
+            if (!WorkspaceStore.ValidateTags(incoming[i]["tags"], out tagLists[i], out JObject tagsError))
+            {
+                return Task.FromResult(MarkImportEntry(tagsError, i));
+            }
+            if (!WorkspaceStore.ValidateBookmarked(incoming[i]["bookmarked"], out bookmarks[i], out JObject bookmarkError))
+            {
+                return Task.FromResult(MarkImportEntry(bookmarkError, i));
             }
         }
         lock (WorkspaceStore.GetLock(session.User))
@@ -181,7 +270,7 @@ public static class WorkspacesAPI
             string now = DateTime.UtcNow.ToString("o");
             for (int i = 0; i < incoming.Count; i++)
             {
-                list.Add(WorkspaceStore.BuildEntry((JObject)incoming[i], Guid.NewGuid().ToString("N"), names[i], 1, now, now));
+                list.Add(WorkspaceStore.BuildEntry((JObject)incoming[i], Guid.NewGuid().ToString("N"), names[i], 1, now, now, folders[i], tagLists[i], bookmarks[i]));
             }
             if (!WorkspaceStore.TrySave(session.User, list, out JObject saveError))
             {

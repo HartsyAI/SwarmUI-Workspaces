@@ -64,6 +64,14 @@ class HartsyWorkspacesManager {
         this.maxImportCount = 200;
         /** Longest workspace name, in characters. Matches the server's limit. */
         this.maxNameLength = 100;
+        /** Longest folder name, in characters. Matches the server's limit. */
+        this.maxFolderLength = 100;
+        /** Most tags on one workspace. Matches the server's limit. */
+        this.maxTags = 20;
+        /** Longest tag, in characters. Matches the server's limit. */
+        this.maxTagLength = 40;
+        /** Text typed in the toolbar's search box, used to filter the dropdown. */
+        this.searchText = '';
         /** Function that closes the open partial-load dialog, or null when none is open. */
         this.closeDialogHandler = null;
         /** Pending timer for the debounced draft save, or null. */
@@ -1383,7 +1391,21 @@ class HartsyWorkspacesManager {
                 + '<button class="basic-button hartsy-workspaces-export" title="Download the saved version of this workspace as a JSON file">Export</button>'
                 + '<button class="basic-button hartsy-workspaces-exportall" title="Download every workspace as one JSON file">Export All</button>'
                 + '<button class="basic-button hartsy-workspaces-import" title="Add workspaces from a JSON file">Import</button>'
+                + '<span class="hartsy-workspaces-break"></span>'
+                + '<button class="basic-button hartsy-workspaces-star" title="Bookmark this workspace so it is listed first">☆ Bookmark</button>'
+                + '<button class="basic-button hartsy-workspaces-organize" title="Set this workspace\'s folder and tags">Folder / Tags...</button>'
+                + '<input type="search" class="hartsy-workspaces-search" placeholder="Search workspaces..." title="Filters the dropdown by name, folder, or tag" />'
                 + '<span class="hartsy-workspaces-status" role="status"></span>';
+            toolbar.querySelector('.hartsy-workspaces-star').addEventListener('click', () => {
+                this.toggleBookmark();
+            });
+            toolbar.querySelector('.hartsy-workspaces-organize').addEventListener('click', () => {
+                this.editOrganization();
+            });
+            toolbar.querySelector('.hartsy-workspaces-search').addEventListener('input', event => {
+                this.searchText = event.target.value;
+                this.refreshToolbar();
+            });
             toolbar.querySelector('.hartsy-workspaces-loadpart').addEventListener('click', () => {
                 this.showPartialDialog();
             });
@@ -1440,20 +1462,14 @@ class HartsyWorkspacesManager {
             return;
         }
         let select = toolbar.querySelector('.hartsy-workspaces-select');
-        let sorted = this.workspaces.slice().sort((a, b) => `${a.name}`.localeCompare(`${b.name}`));
-        select.innerHTML = '';
-        let none = document.createElement('option');
-        none.value = '';
-        none.textContent = '(no workspace)';
-        select.append(none);
-        for (let workspace of sorted) {
-            let option = document.createElement('option');
-            option.value = workspace.id;
-            option.textContent = workspace.name;
-            select.append(option);
-        }
+        this.fillDropdown(select);
         select.value = this.currentId && this.workspaces.some(w => w.id == this.currentId) ? this.currentId : '';
         let hasCurrent = select.value != '';
+        let currentEntry = this.getCurrentEntry();
+        let star = toolbar.querySelector('.hartsy-workspaces-star');
+        star.textContent = currentEntry && currentEntry.bookmarked ? '★ Bookmarked' : '☆ Bookmark';
+        star.disabled = this.busy || !hasCurrent;
+        toolbar.querySelector('.hartsy-workspaces-organize').disabled = this.busy || !hasCurrent;
         select.disabled = this.busy;
         toolbar.querySelector('.hartsy-workspaces-new').disabled = this.busy;
         toolbar.querySelector('.hartsy-workspaces-save').disabled = this.busy;
@@ -1466,6 +1482,182 @@ class HartsyWorkspacesManager {
         toolbar.querySelector('.hartsy-workspaces-export').disabled = this.busy || !hasCurrent;
         toolbar.querySelector('.hartsy-workspaces-exportall').disabled = this.busy || this.workspaces.length == 0;
         toolbar.querySelector('.hartsy-workspaces-import').disabled = this.busy;
+    }
+
+    /**
+     * Returns whether a workspace matches the search text, by name, folder, or tag. A leading "#" is ignored. Empty search matches everything.
+     * @param {Object} workspace The stored workspace.
+     * @param {string} query The lowercase search text.
+     * @returns {boolean} True if it matches.
+     */
+    matchesSearch(workspace, query) {
+        let text = query.startsWith('#') ? query.slice(1) : query;
+        if (text == '') {
+            return true;
+        }
+        let haystack = [`${workspace.name}`, `${workspace.folder || ''}`, ...(Array.isArray(workspace.tags) ? workspace.tags : [])].join('\n').toLowerCase();
+        return haystack.includes(text);
+    }
+
+    /**
+     * Fills the dropdown: bookmarked workspaces first, then one group per folder, then unfiled ones. The search text hides non-matching workspaces, except the current one, which always stays listed.
+     * @param {HTMLSelectElement} select The dropdown.
+     */
+    fillDropdown(select) {
+        let query = `${this.searchText}`.trim().toLowerCase();
+        let compare = (a, b) => `${a.name}`.localeCompare(`${b.name}`);
+        let shown = this.workspaces.filter(w => w.id == this.currentId || this.matchesSearch(w, query)).sort(compare);
+        select.innerHTML = '';
+        let none = document.createElement('option');
+        none.value = '';
+        none.textContent = '(no workspace)';
+        select.append(none);
+        let makeOption = workspace => {
+            let option = document.createElement('option');
+            option.value = workspace.id;
+            let tags = Array.isArray(workspace.tags) && workspace.tags.length > 0 ? `  #${workspace.tags.join(' #')}` : '';
+            option.textContent = `${workspace.name}${tags}`;
+            return option;
+        };
+        let addGroup = (label, items) => {
+            if (items.length == 0) {
+                return;
+            }
+            let group = document.createElement('optgroup');
+            group.label = label;
+            for (let workspace of items) {
+                group.append(makeOption(workspace));
+            }
+            select.append(group);
+        };
+        let bookmarked = shown.filter(w => w.bookmarked);
+        let rest = shown.filter(w => !w.bookmarked);
+        let folders = {};
+        let unfiled = [];
+        for (let workspace of rest) {
+            let folder = `${workspace.folder || ''}`;
+            if (folder == '') {
+                unfiled.push(workspace);
+            }
+            else {
+                if (!folders[folder]) {
+                    folders[folder] = [];
+                }
+                folders[folder].push(workspace);
+            }
+        }
+        let folderNames = Object.keys(folders).sort((a, b) => a.localeCompare(b));
+        if (bookmarked.length == 0 && folderNames.length == 0) {
+            for (let workspace of unfiled) {
+                select.append(makeOption(workspace));
+            }
+        }
+        else {
+            addGroup('★ Bookmarked', bookmarked);
+            for (let folder of folderNames) {
+                addGroup(folder, folders[folder]);
+            }
+            addGroup('Unfiled', unfiled);
+        }
+        if (query != '' && shown.filter(w => w.id != this.currentId).length == 0) {
+            let empty = document.createElement('option');
+            empty.disabled = true;
+            empty.textContent = '(nothing matches the search)';
+            select.append(empty);
+        }
+    }
+
+    /**
+     * Turns the text typed for tags into a list: split on commas, trimmed, empty ones dropped. The server lowercases and de-duplicates.
+     * @param {string} text The text, for example "portrait, video, fast".
+     * @returns {Array<string>} The tags, or null (after showing an error) if one is too long or there are too many.
+     */
+    parseTagText(text) {
+        let tags = [];
+        for (let part of `${text}`.split(',')) {
+            let tag = part.trim();
+            if (tag == '') {
+                continue;
+            }
+            if (tag.length > this.maxTagLength) {
+                showError(`A tag can be at most ${this.maxTagLength} characters: "${tag.slice(0, 20)}..." is too long.`);
+                return null;
+            }
+            tags.push(tag);
+        }
+        if (tags.length > this.maxTags) {
+            showError(`A workspace can have at most ${this.maxTags} tags.`);
+            return null;
+        }
+        return tags;
+    }
+
+    /**
+     * Saves the current workspace's folder, tags, or bookmark. The saved settings are not touched, so unsaved changes stay unsaved.
+     * @param {Object} changes Any of { folder, tags, bookmarked }.
+     */
+    async updateMeta(changes) {
+        let entry = this.getCurrentEntry();
+        if (this.busy || this.restoring || !entry) {
+            return;
+        }
+        this.setBusy(true);
+        try {
+            let response = await this.callApi('WorkspacesSetMeta', { id: entry.id, revision: this.currentRevision, ...changes });
+            this.currentRevision = response.revision;
+            try {
+                // Take the stored values back, so tags show exactly as the server normalized them.
+                await this.listWorkspaces();
+            }
+            catch (error) {
+                console.error('Workspaces: could not refresh the list after a change.', error);
+                Object.assign(entry, changes, { revision: response.revision });
+            }
+        }
+        catch (error) {
+            await this.reportFailure('update', error);
+        }
+        finally {
+            this.setBusy(false);
+        }
+    }
+
+    /**
+     * Toggles the current workspace's bookmark.
+     */
+    async toggleBookmark() {
+        let entry = this.getCurrentEntry();
+        if (entry) {
+            await this.updateMeta({ bookmarked: !entry.bookmarked });
+        }
+    }
+
+    /**
+     * Asks for the current workspace's folder and tags, and saves them.
+     */
+    async editOrganization() {
+        let entry = this.getCurrentEntry();
+        if (this.busy || this.restoring || !entry) {
+            return;
+        }
+        let folder = prompt('Folder for this workspace (leave empty for none):', entry.folder || '');
+        if (folder == null) {
+            return;
+        }
+        folder = folder.trim();
+        if (folder.length > this.maxFolderLength) {
+            showError(`A folder name can be at most ${this.maxFolderLength} characters.`);
+            return;
+        }
+        let tagText = prompt('Tags, separated by commas (leave empty for none):', Array.isArray(entry.tags) ? entry.tags.join(', ') : '');
+        if (tagText == null) {
+            return;
+        }
+        let tags = this.parseTagText(tagText);
+        if (tags == null) {
+            return;
+        }
+        await this.updateMeta({ folder: folder, tags: tags });
     }
 
     /**
@@ -1685,7 +1877,13 @@ class HartsyWorkspacesManager {
         }
         this.setBusy(true);
         try {
-            let response = await this.callApi('WorkspacesCreate', { name: name, snapshot: snapshot });
+            // Save As keeps the original's folder and tags (not its bookmark); New starts unorganized.
+            let request = { name: name, snapshot: snapshot };
+            if (copy && current) {
+                request.folder = current.folder || '';
+                request.tags = Array.isArray(current.tags) ? current.tags : [];
+            }
+            let response = await this.callApi('WorkspacesCreate', request);
             this.storeEntry(response.workspace);
             this.setCurrent(response.workspace, snapshot);
         }
@@ -2082,7 +2280,17 @@ class HartsyWorkspacesManager {
      * @returns {Object} The export entry.
      */
     toExportEntry(entry) {
-        return { name: entry.name, schemaVersion: entry.schemaVersion, values: entry.values, groups: entry.groups, presets: entry.presets, unsupported: entry.unsupported };
+        let result = { name: entry.name, schemaVersion: entry.schemaVersion, values: entry.values, groups: entry.groups, presets: entry.presets, unsupported: entry.unsupported };
+        if (typeof entry.folder == 'string') {
+            result.folder = entry.folder;
+        }
+        if (Array.isArray(entry.tags)) {
+            result.tags = entry.tags;
+        }
+        if (typeof entry.bookmarked == 'boolean') {
+            result.bookmarked = entry.bookmarked;
+        }
+        return result;
     }
 
     /**
@@ -2262,7 +2470,18 @@ class HartsyWorkspacesManager {
             if (problem) {
                 return { error: `${label} ("${name}") cannot be imported: ${problem}` };
             }
-            entries.push(this.toExportEntry({ name: name, schemaVersion: item.schemaVersion, values: item.values, groups: item.groups, presets: item.presets, unsupported: item.unsupported }));
+            if ('folder' in item && item.folder != null && (typeof item.folder != 'string' || item.folder.trim().length > this.maxFolderLength)) {
+                return { error: `${label} ("${name}") has an invalid folder: it must be text of at most ${this.maxFolderLength} characters.` };
+            }
+            if ('tags' in item && item.tags != null) {
+                if (!Array.isArray(item.tags) || item.tags.length > this.maxTags || item.tags.some(t => typeof t != 'string' || t.trim().length < 1 || t.trim().length > this.maxTagLength)) {
+                    return { error: `${label} ("${name}") has invalid tags: at most ${this.maxTags}, each 1 to ${this.maxTagLength} characters.` };
+                }
+            }
+            if ('bookmarked' in item && item.bookmarked != null && typeof item.bookmarked != 'boolean') {
+                return { error: `${label} ("${name}") has an invalid bookmark flag.` };
+            }
+            entries.push(this.toExportEntry({ name: name, schemaVersion: item.schemaVersion, values: item.values, groups: item.groups, presets: item.presets, unsupported: item.unsupported, folder: typeof item.folder == 'string' ? item.folder.trim() : undefined, tags: Array.isArray(item.tags) ? item.tags : undefined, bookmarked: typeof item.bookmarked == 'boolean' ? item.bookmarked : undefined }));
         }
         return { entries: entries };
     }
