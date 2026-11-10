@@ -2222,6 +2222,8 @@ class HartsyWorkspacesManager {
         body.append(sourceRow);
         body.append(createDiv(null, 'hartsy-workspaces-hint', 'Only the ticked parts change. Everything else stays as it is now.'));
         let boxes = [];
+        let list = createDiv(null, 'hartsy-workspaces-dialog-list');
+        body.append(list);
         let addRow = (kind, id, text, depth, hint) => {
             let label = document.createElement('label');
             label.className = 'hartsy-workspaces-dialog-item';
@@ -2235,7 +2237,7 @@ class HartsyWorkspacesManager {
             if (hint) {
                 label.append(createDiv(null, 'hartsy-workspaces-hint', hint));
             }
-            body.append(label);
+            list.append(label);
             boxes.push(box);
         };
         addRow('model', '', 'Model', 0, null);

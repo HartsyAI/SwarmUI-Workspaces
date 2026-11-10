@@ -177,6 +177,11 @@
     display: none;
 }
 
+.hartsy-workspaces-dialog-list {
+    max-height: 50vh;
+    overflow-y: auto;
+}
+
 .hartsy-workspaces-dialog-item {
     display: block;
     padding-top: 0.15rem;
