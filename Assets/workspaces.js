@@ -1388,7 +1388,7 @@ class HartsyWorkspacesManager {
         let toolbar = createDiv(null, 'hartsy-workspaces-toolbar');
         let help = this.makeHelp('hartsy_workspaces_help', this.toolbarHelpHtml());
         toolbar.innerHTML = '<div class="hartsy-workspaces-bar">'
-            + `<select class="auto-dropdown hartsy-workspaces-picker" autocomplete="off" title="Choose a workspace to load"${help.hover}></select>`
+            + `<select class="auto-dropdown hartsy-workspaces-picker" autocomplete="off" title="Choose a workspace to load"></select>`
             + '<button class="basic-button hartsy-workspaces-save" title="Save the current settings (Shift+S)">Save</button>'
             + '<span class="hartsy-workspaces-modified" title="The settings differ from the saved workspace" hidden>Modified</span>'
             + '<button class="basic-button hartsy-workspaces-more" title="More workspace actions">More &#x2B9F;</button>'
@@ -1423,14 +1423,17 @@ class HartsyWorkspacesManager {
     }
 
     /**
-     * Builds a SwarmUI "?" help button and its info popover, the same pair SwarmUI puts beside its own settings. It follows the user's hint-style setting (button or hover).
+     * Builds a SwarmUI "?" help button and its info popover, the same pair (and classes) SwarmUI puts beside its own settings in its default button style.
+     * SwarmUI's hover style is not used: it looks for a settings input with this ID, which a toolbar does not have, so the "?" button is always shown.
      * @param {string} id A unique ID for this help.
      * @param {string} html The help text, as HTML written in this file (never user input).
-     * @returns {Object} { button: HTML of the "?" button, hover: attributes for the hover style, popover: the popover element, which the caller must add to the page }.
+     * @returns {Object} { button: HTML of the "?" button, popover: the popover element, which the caller must add to the page }.
      */
     makeHelp(id, html) {
-        let [button, hover] = getPopoverElemsFor(id, true);
-        return { button: button, hover: hover, popover: createDiv(`popover_${id}`, 'sui-popover sui-info-popover', html) };
+        return {
+            button: `<span class="auto-input-qbutton info-popover-button" onclick="doPopover('${id}', arguments[0])">?</span>`,
+            popover: createDiv(`popover_${id}`, 'sui-popover sui-info-popover', html)
+        };
     }
 
     /**
@@ -1496,7 +1499,7 @@ class HartsyWorkspacesManager {
         modal.tabIndex = -1;
         modal.setAttribute('role', 'dialog');
         modal.innerHTML = '<div class="modal-dialog" role="document"><div class="modal-content">'
-            + `<div class="modal-header"><h5 class="modal-title"${help ? help.hover : ''}>${escapeHtml(title)}${help ? help.button : ''}</h5></div>`
+            + `<div class="modal-header"><h5 class="modal-title">${escapeHtml(title)}${help ? help.button : ''}</h5></div>`
             + '<div class="modal-body"></div>'
             + '<div class="modal-footer"></div>'
             + '</div></div>';

@@ -72,6 +72,6 @@ Named workspaces for the SwarmUI Generate tab. A workspace is a snapshot of para
 
 ## Explain every control
 
-- Every control, menu entry and dialog needs plain-language help for a first-time user: what it does, and why you would use it. Use SwarmUI's own "?" info popover (`makeHelp`, which wraps `getPopoverElemsFor`), never custom tooltips. The toolbar's help text lists every control; dialogs get their own "?" beside the title.
+- Every control, menu entry and dialog needs plain-language help for a first-time user: what it does, and why you would use it. Use SwarmUI's own "?" info popover (`makeHelp`, always the "?" button: SwarmUI's hover style needs a settings input with the same ID, which a toolbar does not have), never custom tooltips. The toolbar's help text lists every control; dialogs get their own "?" beside the title.
 - When you add or change a control, update its help text, the README, and the screenshots in the same PR.
 - A bare text prompt is not enough for anything with more than one possible meaning (for example choosing a folder): use a dialog built with `openModal`, with an explanatory line and suggestions.

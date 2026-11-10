@@ -10,7 +10,7 @@ Early release. Everything described below works. It has been tested by hand in t
 
 ## Using it
 
-One row sits above the parameter list on the Generate tab: **[ workspace dropdown ] [ Save ] [ More ] [ ? ]**. The **?** is SwarmUI's usual help button (it follows your hint-style setting) and explains every control in plain language.
+One row sits above the parameter list on the Generate tab: **[ workspace dropdown ] [ Save ] [ More ] [ ? ]**. The **?** is SwarmUI's usual help button and explains every control in plain language.
 
 ![The toolbar](docs/images/toolbar.png)
 
