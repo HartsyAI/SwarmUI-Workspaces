@@ -10,7 +10,7 @@ Early release. Everything described below works. It has been tested by hand in t
 
 ## Using it
 
-One row sits above the parameter list on the Generate tab: **[ workspace picker ] [ Save ] [ ... ]**.
+One row sits above the parameter list on the Generate tab: **[ workspace dropdown ] [ Save ] [ More ]**.
 
 ![The toolbar](docs/images/toolbar.png)
 
@@ -18,21 +18,21 @@ When the settings differ from the saved workspace, a "Modified" marker appears:
 
 ![The toolbar with unsaved changes](docs/images/toolbar-modified.png)
 
-- **Picker**: click it to open SwarmUI's searchable list of your workspaces: bookmarked ones first, then by folder, with the folder shown beside the name. Type to filter by name or folder, and press Enter to load the first match. Choosing a workspace replaces your current settings completely, and asks first if the current workspace has unsaved changes. "+ New workspace..." at the bottom saves the current settings under a new name.
+- **Picker**: a standard SwarmUI dropdown of your workspaces, grouped as Starred, then one group per folder, then Unfiled (a flat list if you use neither). Choosing a workspace replaces your current settings completely, and asks first if the current workspace has unsaved changes. With no workspace selected, Save asks for a name and creates one.
 - **Save** writes the current settings into the selected workspace (or asks for a name if none is selected). Shift+S does the same, except while you are typing in a field or a dialog or the image editor is open. If the workspace was changed elsewhere, nothing is overwritten and you are told.
 - **Modified** appears when the settings differ from the selected workspace, and goes away only after a successful save or load.
-- **...** holds everything else: Save As, Reload saved version, Rename, Bookmark, Folder, Load part of a workspace, and Delete.
+- **More** holds everything else: Save As New Workspace, Reload Saved Version, Rename Workspace, Star Workspace, Set Folder, Load Part of Workspace, and Delete Workspace.
 
-![The picker](docs/images/picker.png) ![The ... menu](docs/images/menu.png)
+![The More menu](docs/images/menu.png)
 
 ### More detail
 
-- **Save As** copies the folder (not the bookmark). **Reload saved version** throws away unsaved changes and loads the latest saved version, for example after it was changed elsewhere. **Delete** leaves your current settings as they are.
+- **Save As New Workspace** copies the folder (not the star). **Reload Saved Version** throws away unsaved changes and loads the latest saved version, for example after it was changed elsewhere. **Delete Workspace** leaves your current settings as they are.
 - **Load part of a workspace** opens a dialog to load only some parts: the model, the presets, or any parameter group. Only the ticked parts change, and everything else stays as it is. If you tick a group that is switched on inside a parent group that is off, the parent is switched on too, and you are told. The settings then count as modified, because they no longer match the workspace.
 
 ![Partial load dialog](docs/images/partial-load-dialog.png)
 
-- **Bookmark** lists a workspace first. **Folder** sets a folder name (at most 100 characters). Saving settings never changes a workspace's folder or bookmark.
+- **Star Workspace** lists a workspace first. **Set Folder** sets a folder name (at most 100 characters). Saving settings never changes a workspace's folder or star.
 - **Drafts**: while the selected workspace has unsaved changes, a draft of them is kept in your browser a couple of seconds after each change. If you reload the page or close the tab, a notice below the toolbar offers to **Restore** or **Discard** it. Restoring loads the workspace first and then puts the draft on top, so it shows as unsaved changes and never overwrites the saved workspace. Each browser tab keeps its own draft, and a draft from a tab that is still open is never offered.
 
 ## What a workspace saves, and what loading does
