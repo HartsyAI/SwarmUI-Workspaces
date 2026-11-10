@@ -1396,12 +1396,12 @@ class HartsyWorkspacesManager {
         toolbar.querySelector('.hartsy-workspaces-save').addEventListener('click', () => {
             this.saveCurrent();
         });
-        // A click on a button whose popover is open closes it (SwarmUI does that before this runs), so remember on mousedown whether it was open, to toggle instead of reopening.
-        let wire = (selector, open) => {
+        // A click on a button whose own popover is open closes it (SwarmUI does that before this runs), so remember on mousedown whether it was open, to toggle instead of reopening. A click on the other button just switches popovers.
+        let wire = (selector, popoverId, open) => {
             let button = toolbar.querySelector(selector);
             let wasOpen = false;
             button.addEventListener('mousedown', () => {
-                wasOpen = this.isPopoverOpen();
+                wasOpen = this.isPopoverOpen() && this.activePopover.id == popoverId;
             });
             button.addEventListener('click', () => {
                 let skip = wasOpen;
@@ -1411,8 +1411,8 @@ class HartsyWorkspacesManager {
                 }
             });
         };
-        wire('.hartsy-workspaces-picker', rect => this.showPopover('hartsy_workspaces_picker', this.pickerButtons(), true, rect));
-        wire('.hartsy-workspaces-more', rect => this.showPopover('hartsy_workspaces_menu', this.menuButtons(), false, rect));
+        wire('.hartsy-workspaces-picker', 'hartsy_workspaces_picker', rect => this.showPopover('hartsy_workspaces_picker', this.pickerButtons(), true, rect));
+        wire('.hartsy-workspaces-more', 'hartsy_workspaces_menu', rect => this.showPopover('hartsy_workspaces_menu', this.menuButtons(), false, rect));
         return toolbar;
     }
 
