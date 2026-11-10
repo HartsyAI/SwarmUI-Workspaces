@@ -1386,13 +1386,17 @@ class HartsyWorkspacesManager {
      */
     buildToolbar() {
         let toolbar = createDiv(null, 'hartsy-workspaces-toolbar');
+        let help = this.makeHelp('hartsy_workspaces_help', this.toolbarHelpHtml());
         toolbar.innerHTML = '<div class="hartsy-workspaces-bar">'
-            + '<select class="auto-dropdown hartsy-workspaces-picker" autocomplete="off" title="Choose a workspace to load"></select>'
+            + `<select class="auto-dropdown hartsy-workspaces-picker" autocomplete="off" title="Choose a workspace to load"></select>`
             + '<button class="basic-button hartsy-workspaces-save" title="Save the current settings (Shift+S)">Save</button>'
             + '<span class="hartsy-workspaces-modified" title="The settings differ from the saved workspace" hidden>Modified</span>'
             + '<button class="basic-button hartsy-workspaces-more" title="More workspace actions">More &#x2B9F;</button>'
+            + help.button
             + '</div>'
             + '<div class="parens hartsy-workspaces-status" role="status"></div>';
+        toolbar.append(help.popover);
+        this.keepHelpOnScreen(toolbar.querySelector('.info-popover-button'), 'hartsy_workspaces_help');
         toolbar.querySelector('.hartsy-workspaces-save').addEventListener('click', () => {
             this.saveCurrent();
         });
@@ -1416,6 +1420,127 @@ class HartsyWorkspacesManager {
             }
         });
         return toolbar;
+    }
+
+    /**
+     * Builds a SwarmUI "?" help button and its info popover, the same pair (and classes) SwarmUI puts beside its own settings in its default button style.
+     * SwarmUI's hover style is not used: it looks for a settings input with this ID, which a toolbar does not have, so the "?" button is always shown.
+     * @param {string} id A unique ID for this help.
+     * @param {string} html The help text, as HTML written in this file (never user input).
+     * @returns {Object} { button: HTML of the "?" button, popover: the popover element, which the caller must add to the page }.
+     */
+    makeHelp(id, html) {
+        return {
+            button: `<span class="auto-input-qbutton info-popover-button" onclick="doPopover('${id}', arguments[0])">?</span>`,
+            popover: createDiv(`popover_${id}`, 'sui-popover sui-info-popover', html)
+        };
+    }
+
+    /**
+     * SwarmUI positions an info popover using a narrow trial width, so a long one can end up partly off the top or right edge of the window.
+     * After SwarmUI has shown it, this moves it fully on screen.
+     * @param {Element} button The "?" button, or null.
+     * @param {string} helpId The ID the help was made with (see makeHelp).
+     */
+    keepHelpOnScreen(button, helpId) {
+        if (!button) {
+            return;
+        }
+        // Capture phase, then a zero-delay timer: SwarmUI's own click handler on the button runs first and shows the popover, then this adjusts it.
+        button.addEventListener('click', () => {
+            setTimeout(() => {
+                let pop = document.getElementById(`popover_${helpId}`);
+                if (!pop || pop.dataset.visible != 'true') {
+                    return;
+                }
+                pop.style.left = `${Math.max(10, Math.min(parseFloat(pop.style.left) || 0, window.innerWidth - pop.offsetWidth - 10))}px`;
+                pop.style.top = `${Math.max(10, Math.min(parseFloat(pop.style.top) || 0, window.innerHeight - pop.offsetHeight - 10))}px`;
+            }, 0);
+        }, true);
+    }
+
+    /**
+     * The plain-language help shown by the toolbar's "?": what a workspace is and what every control does.
+     * @returns {string} The help HTML.
+     */
+    toolbarHelpHtml() {
+        return '<b>Workspaces</b><br>A workspace saves your whole Generate tab so you can switch setups in one step: every setting, which settings and groups are switched on, and which presets are active. '
+            + 'Choosing one replaces what you have now. It is not a merge like a preset.'
+            + '<br><br><b>Dropdown</b>: choose a saved workspace to load it.'
+            + '<br><b>Save</b>: store your current settings in the selected workspace. With none selected, it asks for a name and creates one. Shortcut: Shift+S.'
+            + '<br><b>Modified</b>: your settings differ from the saved workspace. Save keeps the changes. Choosing another workspace or Reload Saved Version throws them away, after asking.'
+            + '<br><br><b>More</b>'
+            + '<br>&bull; <b>Save As New Workspace</b>: copy your current settings into a new workspace, leaving the selected one as it is.'
+            + '<br>&bull; <b>Reload Saved Version</b>: discard your unsaved changes and go back to the saved settings.'
+            + '<br>&bull; <b>Rename Workspace</b>: change its name.'
+            + '<br>&bull; <b>Star Workspace</b>: list it at the top of the dropdown, under Starred.'
+            + '<br>&bull; <b>Set Folder</b>: file it under a folder name, so related workspaces are grouped together in the dropdown. Optional.'
+            + '<br>&bull; <b>Load Part of Workspace</b>: apply only some parts of a workspace (for example just the model, or just one group) and leave everything else as it is.'
+            + '<br>&bull; <b>Delete Workspace</b>: remove the saved workspace. Your current settings stay as they are.';
+    }
+
+    /**
+     * Builds and shows a SwarmUI modal from the standard modal markup, with a title, an optional "?" help beside it, a body, and a footer. It removes itself when closed.
+     * @param {string} id The modal's element ID. An open modal with the same ID is replaced.
+     * @param {string} title The title.
+     * @param {string} helpHtml Help text for a "?" beside the title, or null for none.
+     * @returns {Object} { modal, body, footer }: the modal element and the elements to fill.
+     */
+    openModal(id, title, helpHtml) {
+        let existing = document.getElementById(id);
+        if (existing) {
+            $(existing).modal('hide');
+            this.removeModal(existing);
+        }
+        let help = helpHtml ? this.makeHelp(`${id}_help`, helpHtml) : null;
+        let modal = document.createElement('div');
+        modal.className = 'modal';
+        modal.id = id;
+        modal.tabIndex = -1;
+        modal.setAttribute('role', 'dialog');
+        modal.innerHTML = '<div class="modal-dialog" role="document"><div class="modal-content">'
+            + `<div class="modal-header"><h5 class="modal-title">${escapeHtml(title)}${help ? help.button : ''}</h5></div>`
+            + '<div class="modal-body"></div>'
+            + '<div class="modal-footer"></div>'
+            + '</div></div>';
+        if (help) {
+            modal.append(help.popover);
+            this.keepHelpOnScreen(modal.querySelector('.info-popover-button'), `${id}_help`);
+        }
+        document.body.append(modal);
+        $(modal).on('hidden.bs.modal', () => {
+            this.removeModal(modal);
+        });
+        return { modal: modal, body: modal.querySelector('.modal-body'), footer: modal.querySelector('.modal-footer') };
+    }
+
+    /**
+     * Removes a modal from the page. An open help popover is hidden first, so SwarmUI is not left tracking a popover that no longer exists.
+     * @param {Element} modal The modal element.
+     */
+    removeModal(modal) {
+        for (let pop of modal.querySelectorAll('.sui-info-popover')) {
+            if (pop.dataset.visible == 'true') {
+                hidePopover(pop.id.replace(/^popover_/, ''));
+            }
+        }
+        modal.remove();
+    }
+
+    /**
+     * Adds a SwarmUI-styled button to a modal footer.
+     * @param {Element} footer The modal footer.
+     * @param {string} text The button text.
+     * @param {boolean} primary True for the main (highlighted) button.
+     * @param {Function} handler Called on click.
+     */
+    addModalButton(footer, text, primary, handler) {
+        let button = document.createElement('button');
+        button.type = 'button';
+        button.className = `btn ${primary ? 'btn-primary' : 'btn-secondary'} basic-button`;
+        button.textContent = text;
+        button.addEventListener('click', handler);
+        footer.append(button);
     }
 
     /**
@@ -1583,23 +1708,53 @@ class HartsyWorkspacesManager {
     }
 
     /**
-     * Asks for the current workspace's folder, and saves it.
+     * Opens the Set Folder dialog for the current workspace: a text box that suggests the folders already in use, and accepts a new name.
      */
-    async editOrganization() {
+    editOrganization() {
         let entry = this.getCurrentEntry();
         if (this.busy || this.restoring || !entry) {
             return;
         }
-        let folder = prompt('Folder for this workspace (leave empty for none):', entry.folder || '');
-        if (folder == null) {
-            return;
+        let { modal, body, footer } = this.openModal('hartsy_workspaces_folder_modal', 'Set Folder', 'Folders only group workspaces in the dropdown. They do not change any settings. '
+            + 'Type a new folder name to create it, or choose one you already use. Leave the box empty to keep this workspace unfiled.');
+        body.append(createDiv(null, null, `Folder for "${escapeHtml(entry.name)}":`));
+        let input = document.createElement('input');
+        input.type = 'text';
+        input.className = 'modal_text_extra';
+        input.maxLength = this.maxFolderLength;
+        input.placeholder = 'No folder';
+        input.value = entry.folder || '';
+        input.setAttribute('list', 'hartsy_workspaces_folder_list');
+        let suggestions = document.createElement('datalist');
+        suggestions.id = 'hartsy_workspaces_folder_list';
+        let folders = new Set(this.workspaces.map(w => `${w.folder || ''}`).filter(f => f != ''));
+        for (let folder of Array.from(folders).sort((a, b) => a.localeCompare(b))) {
+            let option = document.createElement('option');
+            option.value = folder;
+            suggestions.append(option);
         }
-        folder = folder.trim();
-        if (folder.length > this.maxFolderLength) {
-            showError(`A folder name can be at most ${this.maxFolderLength} characters.`);
-            return;
-        }
-        await this.updateMeta({ folder: folder });
+        body.append(input);
+        body.append(suggestions);
+        body.append(createDiv(null, 'parens', 'Choose an existing folder from the suggestions, or type a new one.'));
+        let save = () => {
+            $(modal).modal('hide');
+            this.updateMeta({ folder: input.value.trim() });
+        };
+        input.addEventListener('keydown', event => {
+            // Enter that confirms an IME composition (for example Japanese or Chinese input) must not save the unfinished name.
+            if (event.key == 'Enter' && !event.isComposing) {
+                event.preventDefault();
+                save();
+            }
+        });
+        this.addModalButton(footer, 'Cancel', false, () => {
+            $(modal).modal('hide');
+        });
+        this.addModalButton(footer, 'Save', true, save);
+        $(modal).on('shown.bs.modal', () => {
+            input.focus();
+        });
+        $(modal).modal('show');
     }
 
     /**
@@ -2040,24 +2195,10 @@ class HartsyWorkspacesManager {
         if (!this.isReady()) {
             return;
         }
-        let existing = document.getElementById('hartsy_workspaces_partial_modal');
-        if (existing) {
-            $(existing).modal('hide');
-            existing.remove();
-        }
         let info = this.listParamGroups();
-        let modal = document.createElement('div');
-        modal.className = 'modal';
-        modal.id = 'hartsy_workspaces_partial_modal';
-        modal.tabIndex = -1;
-        modal.setAttribute('role', 'dialog');
-        modal.innerHTML = '<div class="modal-dialog" role="document"><div class="modal-content">'
-            + '<div class="modal-header"><h5 class="modal-title">Load part of a workspace</h5></div>'
-            + '<div class="modal-body"></div>'
-            + '<div class="modal-footer"></div>'
-            + '</div></div>';
-        let body = modal.querySelector('.modal-body');
-        let footer = modal.querySelector('.modal-footer');
+        let { modal, body, footer } = this.openModal('hartsy_workspaces_partial_modal', 'Load Part of Workspace', 'Loads only the parts you tick from the workspace you choose. Everything you leave unticked stays exactly as it is now. '
+            + '<br><b>Model</b>: the model used by the workspace. <b>Presets</b>: which presets are active. Each group below is one group of settings, and "Other parameters" covers settings that are not in any group. '
+            + '<br>Afterwards the settings count as modified, because they no longer match any single workspace.');
         let sourceRow = createDiv(null, null, 'From ');
         let source = document.createElement('select');
         source.className = 'modal_text_extra';
@@ -2101,14 +2242,7 @@ class HartsyWorkspacesManager {
         if (info.hasOther) {
             addRow('other', '', 'Other parameters (no group)', 0, null);
         }
-        let makeButton = (text, primary, handler) => {
-            let button = document.createElement('button');
-            button.type = 'button';
-            button.className = `btn ${primary ? 'btn-primary' : 'btn-secondary'} basic-button`;
-            button.textContent = text;
-            button.addEventListener('click', handler);
-            footer.append(button);
-        };
+        let makeButton = (text, primary, handler) => this.addModalButton(footer, text, primary, handler);
         makeButton('Select all', false, () => {
             for (let box of boxes) {
                 box.checked = true;
@@ -2138,10 +2272,6 @@ class HartsyWorkspacesManager {
             let sourceId = source.value;
             $(modal).modal('hide');
             this.partialLoad(sourceId, selection);
-        });
-        document.body.append(modal);
-        $(modal).on('hidden.bs.modal', () => {
-            modal.remove();
         });
         $(modal).modal('show');
     }
@@ -2535,6 +2665,7 @@ class HartsyWorkspacesManager {
         let restore = document.createElement('button');
         restore.className = 'basic-button';
         restore.textContent = 'Restore';
+        restore.title = 'Put those unsaved changes back on top of the workspace. Nothing is saved until you press Save.';
         restore.addEventListener('click', () => {
             this.recoverDraft(draft);
         });
@@ -2542,6 +2673,7 @@ class HartsyWorkspacesManager {
         let discard = document.createElement('button');
         discard.className = 'basic-button';
         discard.textContent = 'Discard';
+        discard.title = 'Throw those unsaved changes away.';
         discard.addEventListener('click', () => {
             this.discardDraft(draft);
             this.showRecovery();
