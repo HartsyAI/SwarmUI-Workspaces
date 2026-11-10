@@ -86,6 +86,8 @@ class HartsyWorkspacesManager {
         this.recoverySignature = '';
         /** Recovered drafts that could not be written back to browser storage, kept in memory for the notice on this page. */
         this.heldDrafts = [];
+        /** Drafts and tab marks older than this are removed from browser storage, in milliseconds. A draft holds the settings, prompts included, so it should not linger on a shared computer. */
+        this.storageMaxAgeMs = 14 * 24 * 60 * 60 * 1000;
         /** True once the Shift+S listener is attached. */
         this.shortcutAttached = false;
         /** Readable names for the unsupported-state IDs stored in a snapshot's 'unsupported' list. */
@@ -2327,10 +2329,13 @@ class HartsyWorkspacesManager {
 
     /**
      * Reads a browser-storage value. Storage can be blocked or full, so every access is guarded.
-     * @param {string} key The storage key.
+     * @param {string} key The storage key. A null key (no known user yet) reads nothing.
      * @returns {string} The value, or null if missing or unavailable.
      */
     storageGet(key) {
+        if (key == null) {
+            return null;
+        }
         try {
             return localStorage.getItem(key);
         }
@@ -2341,11 +2346,14 @@ class HartsyWorkspacesManager {
 
     /**
      * Writes a browser-storage value.
-     * @param {string} key The storage key.
+     * @param {string} key The storage key. A null key (no known user yet) stores nothing.
      * @param {string} value The value.
      * @returns {boolean} True if it was stored.
      */
     storageSet(key, value) {
+        if (key == null) {
+            return false;
+        }
         try {
             localStorage.setItem(key, value);
             return true;
@@ -2357,9 +2365,12 @@ class HartsyWorkspacesManager {
 
     /**
      * Removes a browser-storage value, ignoring failures.
-     * @param {string} key The storage key.
+     * @param {string} key The storage key. A null key removes nothing.
      */
     storageRemove(key) {
+        if (key == null) {
+            return;
+        }
         try {
             localStorage.removeItem(key);
         }
@@ -2372,9 +2383,12 @@ class HartsyWorkspacesManager {
      * Builds a storage key scoped to this server and user, so drafts from other servers or accounts never mix.
      * @param {string} kind 'draft' or 'alive'.
      * @param {string} tabId The tab the key belongs to.
-     * @returns {string} The key.
+     * @returns {string} The key, or null while the user is not known yet (see hasUserScope).
      */
     scopeKey(kind, tabId) {
+        if (!this.hasUserScope()) {
+            return null;
+        }
         return `${this.scopePrefix()}${kind}:${tabId}`;
     }
 
@@ -2383,7 +2397,57 @@ class HartsyWorkspacesManager {
      * @returns {string} The prefix.
      */
     scopePrefix() {
-        return `hartsy_workspaces:${location.origin}:${typeof user_id != 'undefined' && user_id ? user_id : ''}:`;
+        return `hartsy_workspaces:${location.origin}:${this.hasUserScope() ? user_id : ''}:`;
+    }
+
+    /**
+     * Returns whether SwarmUI has told this page which user it belongs to. Until it has, nothing is written to or read from browser storage,
+     * because keys without a user would be shared by every account that uses this browser.
+     * @returns {boolean} True once the user ID is known.
+     */
+    hasUserScope() {
+        return typeof user_id != 'undefined' && user_id != null && `${user_id}` != '';
+    }
+
+    /**
+     * Removes drafts and tab marks older than storageMaxAgeMs from browser storage, for every server and account that used this browser.
+     * They are this extension's own crash-recovery data, and an old one is abandoned. This tab's own entries are included: a tab restored after a long gap must not offer its old draft.
+     */
+    pruneStaleStorage() {
+        let keys = [];
+        try {
+            for (let i = 0; i < localStorage.length; i++) {
+                let key = localStorage.key(i);
+                if (key && key.startsWith('hartsy_workspaces:')) {
+                    keys.push(key);
+                }
+            }
+        }
+        catch (error) {
+            return;
+        }
+        let cutoff = Date.now() - this.storageMaxAgeMs;
+        for (let key of keys) {
+            // No exception for this tab's own entries: its tab ID survives a reload, so after a long gap its old draft would otherwise be offered for recovery. A live draft is rewritten on every change, so it is never old.
+            let stamp = 0;
+            if (key.includes(':draft:')) {
+                try {
+                    stamp = parseInt(JSON.parse(this.storageGet(key)).savedAt);
+                }
+                catch (error) {
+                    stamp = 0;
+                }
+            }
+            else if (key.includes(':alive:')) {
+                stamp = parseInt(this.storageGet(key));
+            }
+            else {
+                continue;
+            }
+            if (!(stamp > cutoff)) {
+                this.storageRemove(key);
+            }
+        }
     }
 
     /**
@@ -2425,7 +2489,7 @@ class HartsyWorkspacesManager {
      * Starts marking this tab as open every few seconds, so other tabs can tell a closed tab's draft from a live tab's. Safe to call repeatedly.
      */
     startHeartbeat() {
-        if (this.heartbeatTimer) {
+        if (this.heartbeatTimer || !this.hasUserScope()) {
             return;
         }
         let key = this.scopeKey('alive', this.getTabId());
@@ -2457,7 +2521,7 @@ class HartsyWorkspacesManager {
      */
     saveDraft() {
         let entry = this.getCurrentEntry();
-        if (!entry || this.baseline == null || this.restoring || this.busy || !this.isReady()) {
+        if (!entry || this.baseline == null || this.restoring || this.busy || !this.isReady() || !this.hasUserScope()) {
             return;
         }
         let snapshot;
@@ -2485,6 +2549,9 @@ class HartsyWorkspacesManager {
             clearTimeout(this.draftTimer);
             this.draftTimer = null;
         }
+        if (!this.hasUserScope()) {
+            return;
+        }
         let key = this.scopeKey('draft', this.getTabId());
         if (this.storageGet(key) != null) {
             this.storageRemove(key);
@@ -2496,6 +2563,9 @@ class HartsyWorkspacesManager {
      * @returns {Array<Object>} Draft records, each with a 'key' field naming its storage entry.
      */
     findDrafts() {
+        if (!this.hasUserScope()) {
+            return [];
+        }
         let prefix = this.scopePrefix();
         let ownKey = this.scopeKey('draft', this.getTabId());
         this.nextDraftRecheckMs = null;
@@ -2550,10 +2620,11 @@ class HartsyWorkspacesManager {
      * Runs the recovery check once, when the toolbar and the workspace list are both ready.
      */
     checkRecovery() {
-        if (this.recoveryChecked || !this.listLoaded || !this.isReady() || !document.querySelector('.hartsy-workspaces-toolbar')) {
+        if (this.recoveryChecked || !this.listLoaded || !this.isReady() || !this.hasUserScope() || !document.querySelector('.hartsy-workspaces-toolbar')) {
             return;
         }
         this.recoveryChecked = true;
+        this.pruneStaleStorage();
         this.relocateOwnDraft();
         this.showRecovery();
     }

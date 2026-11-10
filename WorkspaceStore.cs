@@ -80,6 +80,12 @@ public static class WorkspaceStore
             return false;
         }
         user.SaveGenericData(Category, Key, text);
+        // SwarmUI's SaveGenericData returns without writing in some cases (for example a user who may no longer create sessions), so confirm the write before reporting success.
+        if (user.GetGenericData(Category, Key) != text)
+        {
+            error = Error("storage_failed", "Workspaces could not be saved to your account. Nothing was changed.");
+            return false;
+        }
         return true;
     }
 

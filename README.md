@@ -71,10 +71,11 @@ git clone https://github.com/HartsyAI/SwarmUI-Workspaces.git Workspaces
 
 ## Data and connections
 
-- Workspaces are stored per user on the SwarmUI server, in that user's generic data.
+- Workspaces are stored per user on the SwarmUI server, in that user's own generic data (keyed by their account ID). The server takes the user from the logged-in session on every request and never from anything the browser sends, so one account cannot list, read, change or delete another account's workspaces, and there is no sharing feature. Each save is read back to confirm it was really stored; if SwarmUI skipped the write, you are told instead of seeing a false success.
+- While you have unsaved changes, a draft of them (which includes your prompts) is kept in your browser's local storage, under a key for that server and your account. It is never offered to another account, nothing is written before SwarmUI has told the page who you are, and drafts older than 14 days are removed. On a shared computer, finish with Save or Discard, or use a private window.
 - The extension makes no external network connections.
 - Earlier builds could also store tags and thumbnails. They are no longer used or shown, and the leftover data is harmless.
-- Workspaces are stored in SwarmUI's account database, so they are lost if that database is lost.
+- Workspaces are stored in SwarmUI's account database, so they are lost if that database is lost, and anyone who can read that database (a server administrator) can read them, as with all SwarmUI account data.
 
 ## License
 
