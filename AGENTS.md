@@ -69,3 +69,9 @@ Named workspaces for the SwarmUI Generate tab. A workspace is a snapshot of para
 - Do not edit SwarmUI core, and do not rebuild what it already provides: use its modal markup (`modal`, `modal-dialog`, `modal-content`, shown with `$(elem).modal('show')`), its buttons, and its preset system for anything preset-like.
 - Do not register parameters or add a parallel storage system. Workspaces are the one new concept; keep it lean (folders and bookmarks are the only organization features).
 - Presets are not replaced: a workspace records which presets were active (title and fingerprint) and re-selects them on load.
+
+## Explain every control
+
+- Every control, menu entry and dialog needs plain-language help for a first-time user: what it does, and why you would use it. Use SwarmUI's own "?" info popover (`makeHelp`, which wraps `getPopoverElemsFor`), never custom tooltips. The toolbar's help text lists every control; dialogs get their own "?" beside the title.
+- When you add or change a control, update its help text, the README, and the screenshots in the same PR.
+- A bare text prompt is not enough for anything with more than one possible meaning (for example choosing a folder): use a dialog built with `openModal`, with an explanatory line and suggestions.

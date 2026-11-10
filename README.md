@@ -10,9 +10,11 @@ Early release. Everything described below works. It has been tested by hand in t
 
 ## Using it
 
-One row sits above the parameter list on the Generate tab: **[ workspace dropdown ] [ Save ] [ More ]**.
+One row sits above the parameter list on the Generate tab: **[ workspace dropdown ] [ Save ] [ More ] [ ? ]**. The **?** is SwarmUI's usual help button (it follows your hint-style setting) and explains every control in plain language.
 
 ![The toolbar](docs/images/toolbar.png)
+
+![The built-in help](docs/images/help.png)
 
 When the settings differ from the saved workspace, a "Modified" marker appears:
 
@@ -32,7 +34,9 @@ When the settings differ from the saved workspace, a "Modified" marker appears:
 
 ![Partial load dialog](docs/images/partial-load-dialog.png)
 
-- **Star Workspace** lists a workspace first. **Set Folder** sets a folder name (at most 100 characters). Saving settings never changes a workspace's folder or star.
+![Set Folder dialog](docs/images/set-folder-dialog.png)
+
+- **Star Workspace** lists a workspace first. **Set Folder** opens a small dialog where you type a folder name (at most 100 characters) or pick one you already use, to group related workspaces in the dropdown. It is optional, and leaving it empty means no folder. Saving settings never changes a workspace's folder or star.
 - **Drafts**: while the selected workspace has unsaved changes, a draft of them is kept in your browser a couple of seconds after each change. If you reload the page or close the tab, a notice below the toolbar offers to **Restore** or **Discard** it. Restoring loads the workspace first and then puts the draft on top, so it shows as unsaved changes and never overwrites the saved workspace. Each browser tab keeps its own draft, and a draft from a tab that is still open is never offered.
 
 ## What a workspace saves, and what loading does
