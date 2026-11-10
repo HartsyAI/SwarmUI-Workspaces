@@ -33,9 +33,6 @@ public static class WorkspaceStore
     /// <summary>Maximum workspace name length, in characters.</summary>
     public const int MaxNameLength = 100;
 
-    /// <summary>Maximum folder name length, in characters.</summary>
-    public const int MaxFolderLength = 100;
-
     /// <summary>Per-user lock objects, keyed by user ID.</summary>
     private static readonly ConcurrentDictionary<string, object> UserLocks = new();
 
@@ -110,6 +107,11 @@ public static class WorkspaceStore
         if (name.Length < 1 || name.Length > MaxNameLength)
         {
             error = Error("invalid_name", $"Workspace name must be 1 to {MaxNameLength} characters.");
+            return false;
+        }
+        if (HasUnsafeCharacters(name))
+        {
+            error = Error("invalid_name", "Workspace name cannot contain control characters, line breaks, or text-direction overrides.");
             return false;
         }
         return true;
@@ -232,10 +234,9 @@ public static class WorkspaceStore
     /// <param name="revision">The revision to store.</param>
     /// <param name="createdAt">Creation timestamp (UTC, ISO 8601).</param>
     /// <param name="updatedAt">Last update timestamp (UTC, ISO 8601).</param>
-    /// <param name="folder">The validated folder name, or empty for none.</param>
     /// <param name="bookmarked">Whether the workspace is bookmarked.</param>
     /// <returns>The entry to store.</returns>
-    public static JObject BuildEntry(JObject snapshot, string id, string name, int revision, string createdAt, string updatedAt, string folder, bool bookmarked)
+    public static JObject BuildEntry(JObject snapshot, string id, string name, int revision, string createdAt, string updatedAt, bool bookmarked)
     {
         return new JObject()
         {
@@ -245,40 +246,12 @@ public static class WorkspaceStore
             ["revision"] = revision,
             ["createdAt"] = createdAt,
             ["updatedAt"] = updatedAt,
-            ["folder"] = folder,
             ["bookmarked"] = bookmarked,
             ["values"] = snapshot["values"].DeepClone(),
             ["groups"] = snapshot["groups"].DeepClone(),
             ["presets"] = snapshot["presets"].DeepClone(),
             ["unsupported"] = snapshot["unsupported"].DeepClone()
         };
-    }
-
-    /// <summary>Checks an optional folder name. A missing or null value means no folder.</summary>
-    /// <param name="raw">The folder token supplied by the client.</param>
-    /// <param name="folder">The trimmed folder name when valid (empty for none).</param>
-    /// <param name="error">Set to the error object when this returns false; null otherwise.</param>
-    /// <returns>True if the folder is valid.</returns>
-    public static bool ValidateFolder(JToken raw, out string folder, out JObject error)
-    {
-        folder = "";
-        error = null;
-        if (raw == null || raw.Type == JTokenType.Null)
-        {
-            return true;
-        }
-        if (raw.Type != JTokenType.String)
-        {
-            error = Error("invalid_folder", "'folder' must be text.");
-            return false;
-        }
-        folder = raw.ToString().Trim();
-        if (folder.Length > MaxFolderLength || HasControlCharacters(folder))
-        {
-            error = Error("invalid_folder", $"A folder name can be at most {MaxFolderLength} characters, with no control characters.");
-            return false;
-        }
-        return true;
     }
 
     /// <summary>Checks an optional bookmark flag. A missing or null value means not bookmarked.</summary>
@@ -303,14 +276,17 @@ public static class WorkspaceStore
         return true;
     }
 
-    /// <summary>Returns whether text contains any control character.</summary>
+    /// <summary>Returns whether text contains a character that has no place in a name: a control character (which includes NUL, newlines, tabs, and DEL),
+    /// a line or paragraph separator, or a text-direction override or isolate, which can make text display as something it is not.
+    /// Joiners such as the zero-width joiner stay allowed, because emoji and several scripts need them.</summary>
     /// <param name="text">The text to check.</param>
-    /// <returns>True if a control character is present.</returns>
-    private static bool HasControlCharacters(string text)
+    /// <returns>True if such a character is present.</returns>
+    private static bool HasUnsafeCharacters(string text)
     {
         foreach (char c in text)
         {
-            if (char.IsControl(c))
+            // U+2028 and U+2029 are line and paragraph separators, U+202A to U+202E are the bidi embeddings and overrides, and U+2066 to U+2069 are the bidi isolates.
+            if (char.IsControl(c) || c == (char)0x2028 || c == (char)0x2029 || (c >= (char)0x202A && c <= (char)0x202E) || (c >= (char)0x2066 && c <= (char)0x2069))
             {
                 return true;
             }

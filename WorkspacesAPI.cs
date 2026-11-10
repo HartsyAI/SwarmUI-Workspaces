@@ -25,9 +25,9 @@ public static class WorkspacesAPI
     }
 
     /// <summary>Creates a workspace from a snapshot. The server assigns the ID, revision 1, and timestamps.</summary>
-    [API.APIDescription("Creates a workspace. Send 'name' (string) and 'snapshot' (object, schema version 1), and optionally 'folder' (string) and 'bookmarked' (bool). Returns the stored workspace.", "\"success\": true, \"workspace\": { \"id\": \"abc123\", \"revision\": 1 }")]
+    [API.APIDescription("Creates a workspace. Send 'name' (string) and 'snapshot' (object, schema version 1), and optionally 'bookmarked' (bool). Returns the stored workspace.", "\"success\": true, \"workspace\": { \"id\": \"abc123\", \"revision\": 1 }")]
     public static Task<JObject> WorkspacesCreate(Session session,
-        [API.APIParameter("Raw body: 'name' (string), 'snapshot' (object), and optional 'folder' and 'bookmarked'.")] JObject raw)
+        [API.APIParameter("Raw body: 'name' (string), 'snapshot' (object), and optional 'bookmarked'.")] JObject raw)
     {
         if (!WorkspaceStore.ValidateName(raw["name"]?.ToString(), out string name, out JObject nameError))
         {
@@ -36,10 +36,6 @@ public static class WorkspacesAPI
         if (!WorkspaceStore.ValidateSnapshot(raw["snapshot"], out JObject snapError))
         {
             return Task.FromResult(snapError);
-        }
-        if (!WorkspaceStore.ValidateFolder(raw["folder"], out string folder, out JObject folderError))
-        {
-            return Task.FromResult(folderError);
         }
         if (!WorkspaceStore.ValidateBookmarked(raw["bookmarked"], out bool bookmarked, out JObject bookmarkError))
         {
@@ -54,7 +50,7 @@ public static class WorkspacesAPI
                 return Task.FromResult(WorkspaceStore.Error("quota_exceeded", $"You can store at most {WorkspaceStore.MaxWorkspaces} workspaces."));
             }
             string now = DateTime.UtcNow.ToString("o");
-            JObject entry = WorkspaceStore.BuildEntry(snapshot, Guid.NewGuid().ToString("N"), name, 1, now, now, folder, bookmarked);
+            JObject entry = WorkspaceStore.BuildEntry(snapshot, Guid.NewGuid().ToString("N"), name, 1, now, now, bookmarked);
             list.Add(entry);
             if (!WorkspaceStore.TrySave(session.User, list, out JObject saveError))
             {
@@ -92,10 +88,9 @@ public static class WorkspacesAPI
             }
             JObject current = (JObject)list[index];
             string now = DateTime.UtcNow.ToString("o");
-            // Saving settings keeps the workspace's organization (folder, bookmark) as it is.
-            string folder = current["folder"]?.ToString() ?? "";
+            // Saving settings keeps the workspace's star as it is.
             bool bookmarked = current["bookmarked"]?.Type == JTokenType.Boolean && current["bookmarked"].Value<bool>();
-            JObject entry = WorkspaceStore.BuildEntry(snapshot, id, name, revision + 1, current["createdAt"]?.ToString() ?? now, now, folder, bookmarked);
+            JObject entry = WorkspaceStore.BuildEntry(snapshot, id, name, revision + 1, current["createdAt"]?.ToString() ?? now, now, bookmarked);
             list[index] = entry;
             if (!WorkspaceStore.TrySave(session.User, list, out JObject saveError))
             {
@@ -135,25 +130,21 @@ public static class WorkspacesAPI
         }
     }
 
-    /// <summary>Sets a workspace's folder and bookmark without touching its saved settings. The revision must match. Fields left out are unchanged.</summary>
-    [API.APIDescription("Sets a workspace's folder and bookmark. Send 'id', 'revision', and any of 'folder' (string) and 'bookmarked' (bool); fields left out are unchanged. Returns the new revision.", "\"success\": true, \"revision\": 2")]
+    /// <summary>Stars or unstars a workspace (stored as 'bookmarked') without touching its saved settings. The revision must match.</summary>
+    [API.APIDescription("Stars or unstars a workspace. Send 'id', 'revision', and 'bookmarked' (bool). Returns the new revision.", "\"success\": true, \"revision\": 2")]
     public static Task<JObject> WorkspacesSetMeta(Session session,
-        [API.APIParameter("Raw body: 'id' (string), 'revision' (int), and any of 'folder' and 'bookmarked'.")] JObject raw)
+        [API.APIParameter("Raw body: 'id' (string), 'revision' (int), and 'bookmarked' (bool).")] JObject raw)
     {
         string id = raw["id"]?.ToString() ?? "";
         if (!ReadInt(raw["revision"], out int revision))
         {
             return Task.FromResult(WorkspaceStore.Error("invalid_revision", "'revision' must be an integer."));
         }
-        string folder = "";
-        bool bookmarked = false;
-        bool hasFolder = raw.ContainsKey("folder");
-        bool hasBookmarked = raw.ContainsKey("bookmarked");
-        if (hasFolder && !WorkspaceStore.ValidateFolder(raw["folder"], out folder, out JObject folderError))
+        if (raw["bookmarked"] == null)
         {
-            return Task.FromResult(folderError);
+            return Task.FromResult(WorkspaceStore.Error("invalid_bookmark", "'bookmarked' is required and must be true or false."));
         }
-        if (hasBookmarked && !WorkspaceStore.ValidateBookmarked(raw["bookmarked"], out bookmarked, out JObject bookmarkError))
+        if (!WorkspaceStore.ValidateBookmarked(raw["bookmarked"], out bool bookmarked, out JObject bookmarkError))
         {
             return Task.FromResult(bookmarkError);
         }
@@ -165,14 +156,7 @@ public static class WorkspacesAPI
                 return Task.FromResult(findError);
             }
             JObject current = (JObject)list[index];
-            if (hasFolder)
-            {
-                current["folder"] = folder;
-            }
-            if (hasBookmarked)
-            {
-                current["bookmarked"] = bookmarked;
-            }
+            current["bookmarked"] = bookmarked;
             current["revision"] = revision + 1;
             current["updatedAt"] = DateTime.UtcNow.ToString("o");
             if (!WorkspaceStore.TrySave(session.User, list, out JObject saveError))
