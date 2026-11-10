@@ -24,7 +24,7 @@ Named workspaces for the SwarmUI Generate tab. A workspace is a snapshot of para
 ## Building and testing
 
 - Do not run builds yourself unless the user asks. SwarmUI is rebuilt and restarted by the user (`launch-windows-dev.ps1`); C# changes need a restart, JS and CSS changes need a page reload.
-- There are no automated tests. Verify by reading the code step by step and, when a dev server is running, by exercising the Generate tab in the browser (`http://localhost:7801/Text2Image`).
+- The one automated check is `tests/two-user-isolation.mjs`, which needs a throwaway SwarmUI instance (never a real one, it creates users). Run it after any change to the API or storage. Everything else: verify by reading the code step by step and, when a dev server is running, by exercising the Generate tab in the browser (`http://localhost:7801/Text2Image`).
 - Never touch SwarmUI itself (anything outside this folder), or its `Data/`, `Output/`, `Models/` folders.
 - Do not stop a SwarmUI process you did not start; another session may own it.
 
@@ -32,7 +32,7 @@ Named workspaces for the SwarmUI Generate tab. A workspace is a snapshot of para
 
 - Mostly standard C#, explicit types (no `var`), full braced blocks, `///` XML docs on every field and method. No `{ get; set; }` auto-properties for plain fields.
 - Use FreneticUtilities helpers where SwarmUI does (`ToLowerFast`, etc.).
-- Derive the user from the session on every call. Never trust a user id from the request.
+- Derive the user from the session (`session.User`) on every call. Never read a user ID from the request, and never keep workspace data in static fields or caches (only the per-user lock table is static). Storage is `User.GetGenericData`/`SaveGenericData`, which are keyed by the user ID; confirm every write by reading it back, because SwarmUI skips writes silently in some cases.
 - Every read-modify-write runs under the per-user lock in `WorkspaceStore`, with revision checking (`FindChecked`, `revision_conflict`).
 - Build stored entries only through the `BuildEntry` whitelist. Never store request data as it arrived.
 - Validate structure, types, lengths and quotas before writing. 
@@ -62,7 +62,7 @@ Named workspaces for the SwarmUI Generate tab. A workspace is a snapshot of para
 
 - The README is user-facing and must match behavior. When you change behavior, limits or the menu, update it in the same PR.
 - Screenshots in `docs/images/` should show the extension working. Re-capture them if the UI changes noticeably.
-- The README states that there are no automated tests; update that line if tests are added.
+- The README names the automated checks; update that line if tests are added or removed.
 
 ## Stay inside SwarmUI's systems
 
@@ -75,3 +75,8 @@ Named workspaces for the SwarmUI Generate tab. A workspace is a snapshot of para
 - Every control, menu entry and dialog needs plain-language help for a first-time user: what it does, and why you would use it. Use SwarmUI's own "?" info popover (`makeHelp`, always the "?" button: SwarmUI's hover style needs a settings input with the same ID, which a toolbar does not have), never custom tooltips. The toolbar's help text lists every control; dialogs get their own "?" beside the title.
 - When you add or change a control, update its help text, the README, and the screenshots in the same PR.
 - A bare text prompt is not enough for anything with more than one possible meaning (for example choosing a folder): use a dialog built with `openModal`, with an explanatory line and suggestions.
+
+## Keep users separate in the browser too
+
+- Browser storage keys always include the server origin and SwarmUI's `user_id`. While `user_id` is unknown the scoped key is `null` and storage is not touched, never a shared fallback key.
+- Anything kept in browser storage can hold prompts, so it must expire (drafts are pruned after 14 days) and must never be offered to a different account.
