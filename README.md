@@ -6,7 +6,7 @@ A SwarmUI extension for saving and restoring named workspaces: snapshots of your
 
 ## Status
 
-Early release. Everything described below works. It has been tested by hand in the browser against a SwarmUI dev build. The one automated check is `tests/two-user-isolation.mjs` (run it against a throwaway SwarmUI, see the file header): it proves that one account cannot see or change another account's workspaces. Please report anything odd.
+Early release. Everything described below works. It has been tested by hand in the browser against a SwarmUI dev build; there are no automated tests yet, so please report anything odd.
 
 ## Using it
 

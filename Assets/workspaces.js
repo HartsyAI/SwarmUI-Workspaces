@@ -2411,7 +2411,7 @@ class HartsyWorkspacesManager {
 
     /**
      * Removes drafts and tab marks older than storageMaxAgeMs from browser storage, for every server and account that used this browser.
-     * They are this extension's own crash-recovery data, and an old one is abandoned. This tab's own entries are left alone.
+     * They are this extension's own crash-recovery data, and an old one is abandoned. This tab's own entries are included: a tab restored after a long gap must not offer its old draft.
      */
     pruneStaleStorage() {
         let keys = [];
@@ -2426,12 +2426,9 @@ class HartsyWorkspacesManager {
         catch (error) {
             return;
         }
-        let ownKeys = new Set([this.scopeKey('draft', this.getTabId()), this.scopeKey('alive', this.getTabId())]);
         let cutoff = Date.now() - this.storageMaxAgeMs;
         for (let key of keys) {
-            if (ownKeys.has(key)) {
-                continue;
-            }
+            // No exception for this tab's own entries: its tab ID survives a reload, so after a long gap its old draft would otherwise be offered for recovery. A live draft is rewritten on every change, so it is never old.
             let stamp = 0;
             if (key.includes(':draft:')) {
                 try {

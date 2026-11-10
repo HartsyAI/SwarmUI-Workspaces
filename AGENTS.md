@@ -24,7 +24,7 @@ Named workspaces for the SwarmUI Generate tab. A workspace is a snapshot of para
 ## Building and testing
 
 - Do not run builds yourself unless the user asks. SwarmUI is rebuilt and restarted by the user (`launch-windows-dev.ps1`); C# changes need a restart, JS and CSS changes need a page reload.
-- The one automated check is `tests/two-user-isolation.mjs`, which needs a throwaway SwarmUI instance (never a real one, it creates users). Run it after any change to the API or storage. Everything else: verify by reading the code step by step and, when a dev server is running, by exercising the Generate tab in the browser (`http://localhost:7801/Text2Image`).
+- There are no automated tests. Verify by reading the code step by step and, when a dev server is running, by exercising the Generate tab in the browser (`http://localhost:7801/Text2Image`).
 - Never touch SwarmUI itself (anything outside this folder), or its `Data/`, `Output/`, `Models/` folders.
 - Do not stop a SwarmUI process you did not start; another session may own it.
 
@@ -62,7 +62,7 @@ Named workspaces for the SwarmUI Generate tab. A workspace is a snapshot of para
 
 - The README is user-facing and must match behavior. When you change behavior, limits or the menu, update it in the same PR.
 - Screenshots in `docs/images/` should show the extension working. Re-capture them if the UI changes noticeably.
-- The README names the automated checks; update that line if tests are added or removed.
+- The README states that there are no automated tests; update that line if tests are added.
 
 ## Stay inside SwarmUI's systems
 
