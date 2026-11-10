@@ -44,7 +44,7 @@ Named workspaces for the SwarmUI Generate tab. A workspace is a snapshot of para
 
 - Must work on current Chrome, Firefox, Safari and on modern mobile browsers.
 - JS: `let`, never `var` or `const`; full braced blocks; `else {` on its own line, never `} else {`; `/** ... */` doc on every function; `for (...)` loops rather than `forEach`; use `Map` for user-keyed lookups (a folder named `__proto__` must not break anything).
-- CSS: class selectors only, never `#id` selectors. Colors come only from SwarmUI theme variables (`--text`, `--red`, `--background-soft`, ...), never hex or rgb literals, so every theme works. Keep custom CSS small and reuse SwarmUI classes (`basic-button`, `modal`, ...).
+- CSS: almost none. Reuse SwarmUI's components: popovers via `AdvancedPopover` (search, scrolling and dismissal included), dialogs via the standard `modal` markup, buttons via `basic-button`, soft text via `parens`. Custom CSS is limited to laying out the toolbar row and two notices. Colors come only from SwarmUI theme variables (`--text`, `--emphasis`, `--background-soft`, ...), never hex, rgb or shadows. Class selectors only, never `#id`.
 - New behavior goes into `HartsyWorkspacesManager`, not free functions. Check `util.js` and `site.js` in SwarmUI for an existing helper before writing one.
 - SwarmUI's `triggerChangeFor` dispatches non-bubbling events, so modified tracking uses capturing document listeners. Do not switch to bubbling listeners.
 - Escape all user-provided text (`escapeHtml`) before putting it in HTML. Names and folders are user input.

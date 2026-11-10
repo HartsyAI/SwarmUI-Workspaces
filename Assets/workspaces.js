@@ -60,8 +60,8 @@ class HartsyWorkspacesManager {
         this.maxNameLength = 100;
         /** Longest folder name, in characters. Matches the server's limit. */
         this.maxFolderLength = 100;
-        /** Text typed in the toolbar's search box, used to filter the dropdown. */
-        this.searchText = '';
+        /** The SwarmUI popover (picker or menu) opened from the toolbar, or null. Its 'popover' field is null once it has closed. */
+        this.activePopover = null;
         /** Pending timer for the debounced draft save, or null. */
         this.draftTimer = null;
         /** Timer that refreshes this tab's "still open" mark, or null. */
@@ -86,8 +86,6 @@ class HartsyWorkspacesManager {
         this.recoverySignature = '';
         /** Recovered drafts that could not be written back to browser storage, kept in memory for the notice on this page. */
         this.heldDrafts = [];
-        /** True once the listeners that close an open toolbar panel are attached. */
-        this.panelDismissalAttached = false;
         /** True once the Shift+S listener is attached. */
         this.shortcutAttached = false;
         /** Readable names for the unsupported-state IDs stored in a snapshot's 'unsupported' list. */
@@ -1375,7 +1373,6 @@ class HartsyWorkspacesManager {
         }
         this.attachTracking();
         this.attachShortcut();
-        this.attachPanelDismissal();
         this.startHeartbeat();
         this.refreshToolbar();
         this.checkRecovery();
@@ -1384,178 +1381,108 @@ class HartsyWorkspacesManager {
 
     /**
      * Builds the toolbar element and wires its buttons. Call only from ensureToolbar, which makes sure there is just one.
+     * The picker and the "..." menu are SwarmUI's own popovers (AdvancedPopover), opened on demand, so they match every theme.
      * @returns {Element} The new toolbar, not yet placed on the page.
      */
     buildToolbar() {
         let toolbar = createDiv(null, 'hartsy-workspaces-toolbar');
-        // Every action except Save lives in the menu or the picker, so the bar itself stays small. A null entry is a divider.
-        let menuItems = [
-            ['saveas', 'Save As...', 'Save the current settings as a copy of this workspace'],
-            ['reload', 'Reload saved version', 'Throw away unsaved changes and load the latest saved version of this workspace'],
-            ['rename', 'Rename...', 'Rename this workspace'],
-            null,
-            ['star', 'Bookmark', 'List this workspace first'],
-            ['organize', 'Folder...', 'Set this workspace\'s folder'],
-            null,
-            ['loadpart', 'Load part of a workspace...', 'Load only some parts of a workspace and leave everything else as it is'],
-            null,
-            ['delete', 'Delete this workspace', 'Delete this workspace. Your current settings stay as they are']
-        ];
-        let menuHtml = '';
-        for (let item of menuItems) {
-            if (item == null) {
-                menuHtml += '<div class="hartsy-workspaces-separator" role="separator"></div>';
-            }
-            else {
-                menuHtml += `<button class="hartsy-workspaces-item hartsy-workspaces-${item[0]}${item[0] == 'delete' ? ' hartsy-workspaces-danger' : ''}" role="menuitem" title="${escapeHtml(item[2])}">${escapeHtml(item[1])}</button>`;
-            }
-        }
         toolbar.innerHTML = '<div class="hartsy-workspaces-bar">'
-            + '<button class="basic-button hartsy-workspaces-picker" aria-haspopup="listbox" aria-expanded="false" title="Choose a workspace to load"><span class="hartsy-workspaces-picker-name">No workspace</span><span class="hartsy-workspaces-caret" aria-hidden="true">▾</span></button>'
+            + '<button class="basic-button hartsy-workspaces-picker" title="Choose a workspace to load">No workspace</button>'
             + '<button class="basic-button hartsy-workspaces-save" title="Save the current settings (Shift+S)">Save</button>'
             + '<span class="hartsy-workspaces-modified" title="The settings differ from the saved workspace" hidden>● Modified</span>'
-            + '<button class="basic-button hartsy-workspaces-more" aria-haspopup="menu" aria-expanded="false" title="More actions" aria-label="More workspace actions">⋯</button>'
-            + '<div class="hartsy-workspaces-panel hartsy-workspaces-picker-panel" hidden>'
-            + '<input type="search" class="hartsy-workspaces-search" placeholder="Search by name or folder..." aria-label="Search workspaces" />'
-            + '<div class="hartsy-workspaces-list" role="listbox"></div>'
-            + '<button class="hartsy-workspaces-item hartsy-workspaces-new" title="Save the current settings as a new workspace">+ New workspace...</button>'
+            + '<button class="basic-button hartsy-workspaces-more" title="More actions" aria-label="More workspace actions">⋯</button>'
             + '</div>'
-            + `<div class="hartsy-workspaces-panel hartsy-workspaces-menu" role="menu" hidden>${menuHtml}</div>`
-            + '</div>'
-            + '<span class="hartsy-workspaces-status" role="status"></span>';
-        let actions = {
-            new: () => this.saveNew(false),
-            saveas: () => this.saveNew(true),
-            reload: () => {
-                if (this.currentId) {
-                    this.loadWorkspace(this.currentId);
-                }
-            },
-            rename: () => this.renameCurrent(),
-            star: () => this.toggleBookmark(),
-            organize: () => this.editOrganization(),
-            loadpart: () => this.showPartialDialog(),
-            delete: () => this.deleteCurrent()
-        };
-        for (let name of Object.keys(actions)) {
-            toolbar.querySelector(`.hartsy-workspaces-${name}`).addEventListener('click', () => {
-                this.closePanels();
-                actions[name]();
-            });
-        }
+            + '<div class="parens hartsy-workspaces-status" role="status"></div>';
         toolbar.querySelector('.hartsy-workspaces-save').addEventListener('click', () => {
             this.saveCurrent();
         });
-        toolbar.querySelector('.hartsy-workspaces-picker').addEventListener('click', () => {
-            this.togglePanel('picker');
-        });
-        toolbar.querySelector('.hartsy-workspaces-more').addEventListener('click', () => {
-            this.togglePanel('menu');
-        });
-        let search = toolbar.querySelector('.hartsy-workspaces-search');
-        search.addEventListener('input', () => {
-            this.searchText = search.value;
-            this.fillPicker();
-        });
-        search.addEventListener('keydown', event => {
-            if (event.key == 'Enter' || event.key == 'ArrowDown') {
-                // Enter picks the first match, so typing a few letters and pressing Enter loads a workspace.
-                let first = Array.from(toolbar.querySelectorAll('.hartsy-workspaces-list .hartsy-workspaces-item')).find(item => item.dataset.id && !item.classList.contains('hartsy-workspaces-item-current'));
-                if (event.key == 'Enter' && first) {
-                    event.preventDefault();
-                    first.click();
+        // A click on a button whose popover is open closes it (SwarmUI does that before this runs), so remember on mousedown whether it was open, to toggle instead of reopening.
+        let wire = (selector, open) => {
+            let button = toolbar.querySelector(selector);
+            let wasOpen = false;
+            button.addEventListener('mousedown', () => {
+                wasOpen = this.isPopoverOpen();
+            });
+            button.addEventListener('click', () => {
+                let skip = wasOpen;
+                wasOpen = false;
+                if (!skip && !this.busy) {
+                    open(button.getBoundingClientRect());
                 }
-                else if (event.key == 'ArrowDown') {
-                    event.preventDefault();
-                    let target = toolbar.querySelector('.hartsy-workspaces-list .hartsy-workspaces-item');
-                    if (target) {
-                        target.focus();
-                    }
-                }
-            }
-        });
-        toolbar.querySelector('.hartsy-workspaces-list').addEventListener('click', event => {
-            let item = event.target.closest('.hartsy-workspaces-item');
-            if (item) {
-                let id = item.dataset.id || '';
-                this.closePanels();
-                this.pickWorkspace(id);
-            }
-        });
+            });
+        };
+        wire('.hartsy-workspaces-picker', rect => this.showPopover('hartsy_workspaces_picker', this.pickerButtons(), true, rect));
+        wire('.hartsy-workspaces-more', rect => this.showPopover('hartsy_workspaces_menu', this.menuButtons(), false, rect));
         return toolbar;
     }
 
     /**
-     * Opens or closes one of the toolbar's panels: 'picker' (search and list of workspaces) or 'menu' (the "..." actions). Opening one closes the other.
-     * @param {string} kind 'picker' or 'menu'.
+     * Returns whether one of this toolbar's popovers is currently open.
+     * @returns {boolean} True if open.
      */
-    togglePanel(kind) {
-        let toolbar = document.querySelector('.hartsy-workspaces-toolbar');
-        if (!toolbar) {
-            return;
-        }
-        let panel = toolbar.querySelector(kind == 'picker' ? '.hartsy-workspaces-picker-panel' : '.hartsy-workspaces-menu');
-        let wasOpen = !panel.hidden;
-        this.closePanels();
-        if (wasOpen || this.busy) {
-            return;
-        }
-        panel.hidden = false;
-        toolbar.querySelector(kind == 'picker' ? '.hartsy-workspaces-picker' : '.hartsy-workspaces-more').setAttribute('aria-expanded', 'true');
-        if (kind == 'picker') {
-            this.fillPicker();
-            toolbar.querySelector('.hartsy-workspaces-search').focus();
-        }
-        else {
-            let first = panel.querySelector('.hartsy-workspaces-item:not(:disabled)');
-            if (first) {
-                first.focus();
-            }
-        }
+    isPopoverOpen() {
+        return this.activePopover != null && this.activePopover.popover != null;
     }
 
     /**
-     * Closes both toolbar panels and clears the search box.
+     * Opens a SwarmUI popover under a toolbar button, closing any popover of this toolbar that is already open.
+     * @param {string} id Popover ID.
+     * @param {Array<Object>} buttons Entries in AdvancedPopover's format: { key, key_html, title, searchable, action }.
+     * @param {boolean} canSearch True to include SwarmUI's search box.
+     * @param {DOMRect} rect The bounds of the button to open under.
      */
-    closePanels() {
-        let toolbar = document.querySelector('.hartsy-workspaces-toolbar');
-        if (!toolbar) {
-            return;
+    showPopover(id, buttons, canSearch, rect) {
+        if (this.isPopoverOpen()) {
+            this.activePopover.remove();
         }
-        for (let panel of toolbar.querySelectorAll('.hartsy-workspaces-panel')) {
-            panel.hidden = true;
-        }
-        toolbar.querySelector('.hartsy-workspaces-picker').setAttribute('aria-expanded', 'false');
-        toolbar.querySelector('.hartsy-workspaces-more').setAttribute('aria-expanded', 'false');
-        this.searchText = '';
-        toolbar.querySelector('.hartsy-workspaces-search').value = '';
+        this.activePopover = new AdvancedPopover(id, buttons, canSearch, rect.x, rect.bottom + 4, document.body);
     }
 
     /**
-     * Attaches the page-wide listeners that close an open panel on Escape or on a click elsewhere. Safe to call repeatedly.
+     * Builds the picker's entries: bookmarked workspaces first, then by folder, then by name, followed by the actions that leave the list.
+     * The folder shows beside the name and is searchable. Typing in the search box and pressing Enter loads the first match.
+     * @returns {Array<Object>} The popover entries.
      */
-    attachPanelDismissal() {
-        if (this.panelDismissalAttached) {
-            return;
+    pickerButtons() {
+        let text = value => `${value || ''}`;
+        let sorted = this.workspaces.slice().sort((a, b) => (b.bookmarked ? 1 : 0) - (a.bookmarked ? 1 : 0) || text(a.folder).localeCompare(text(b.folder)) || text(a.name).localeCompare(text(b.name)));
+        let buttons = [];
+        for (let workspace of sorted) {
+            let folder = workspace.folder ? ` <span class="parens">- ${escapeHtml(workspace.folder)}</span>` : '';
+            buttons.push({
+                key: workspace.name,
+                searchable: `${workspace.name} ${text(workspace.folder)}`,
+                key_html: `${workspace.id == this.currentId ? '✓ ' : ''}${workspace.bookmarked ? '★ ' : ''}${escapeHtml(workspace.name)}${folder}`,
+                action: () => this.pickWorkspace(workspace.id)
+            });
         }
-        this.panelDismissalAttached = true;
-        document.addEventListener('mousedown', event => {
-            let toolbar = document.querySelector('.hartsy-workspaces-toolbar');
-            if (!toolbar || !toolbar.querySelector('.hartsy-workspaces-panel:not([hidden])')) {
-                return;
-            }
-            if (!event.target.closest('.hartsy-workspaces-bar')) {
-                this.closePanels();
-            }
-        }, true);
-        document.addEventListener('keydown', event => {
-            let toolbar = document.querySelector('.hartsy-workspaces-toolbar');
-            if (event.key == 'Escape' && toolbar && toolbar.querySelector('.hartsy-workspaces-panel:not([hidden])')) {
-                let wasPicker = !toolbar.querySelector('.hartsy-workspaces-picker-panel').hidden;
-                this.closePanels();
-                toolbar.querySelector(wasPicker ? '.hartsy-workspaces-picker' : '.hartsy-workspaces-more').focus();
-            }
-        });
+        if (this.currentId) {
+            buttons.push({ key: 'No workspace (keep the current settings)', action: () => this.pickWorkspace('') });
+        }
+        buttons.push({ key: '+ New workspace...', title: 'Save the current settings as a new workspace', action: () => this.saveNew(false) });
+        return buttons;
+    }
+
+    /**
+     * Builds the "..." menu's entries. Entries that need a selected workspace are left out when none is selected.
+     * @returns {Array<Object>} The popover entries.
+     */
+    menuButtons() {
+        let entry = this.getCurrentEntry();
+        let buttons = [{ key: 'Save As...', title: 'Save the current settings as a copy of this workspace', action: () => this.saveNew(true) }];
+        if (entry) {
+            buttons.push({ key: 'Reload saved version', title: 'Throw away unsaved changes and load the latest saved version of this workspace', action: () => this.loadWorkspace(this.currentId) });
+            buttons.push({ key: 'Rename...', action: () => this.renameCurrent() });
+            buttons.push({ key: entry.bookmarked ? 'Remove bookmark' : 'Bookmark', title: 'Bookmarked workspaces are listed first', action: () => this.toggleBookmark() });
+            buttons.push({ key: 'Folder...', title: 'Set this workspace\'s folder', action: () => this.editOrganization() });
+        }
+        if (this.workspaces.length > 0) {
+            buttons.push({ key: 'Load part of a workspace...', title: 'Load only some parts of a workspace and leave everything else as it is', action: () => this.showPartialDialog() });
+        }
+        if (entry) {
+            buttons.push({ key: 'Delete this workspace', title: 'Delete this workspace. Your current settings stay as they are', action: () => this.deleteCurrent() });
+        }
+        return buttons;
     }
 
     /**
@@ -1568,10 +1495,9 @@ class HartsyWorkspacesManager {
         }
         let entry = this.getCurrentEntry();
         let hasCurrent = entry != null;
-        let hasAny = this.workspaces.length > 0;
-        let picker = toolbar.querySelector('.hartsy-workspaces-picker');
         let label = hasCurrent ? `${entry.bookmarked ? '★ ' : ''}${entry.name}` : 'No workspace';
-        toolbar.querySelector('.hartsy-workspaces-picker-name').textContent = label;
+        let picker = toolbar.querySelector('.hartsy-workspaces-picker');
+        picker.textContent = `${label} ▾`;
         picker.title = hasCurrent ? `${label}. Choose another workspace to load` : 'Choose a workspace to load';
         picker.disabled = this.busy;
         toolbar.querySelector('.hartsy-workspaces-more').disabled = this.busy;
@@ -1579,114 +1505,6 @@ class HartsyWorkspacesManager {
         save.disabled = this.busy;
         save.title = hasCurrent ? 'Save the current settings to this workspace (Shift+S)' : 'Save the current settings as a new workspace (Shift+S)';
         toolbar.querySelector('.hartsy-workspaces-modified').hidden = !(hasCurrent && this.modified);
-        let setDisabled = (name, disabled) => {
-            toolbar.querySelector(`.hartsy-workspaces-${name}`).disabled = disabled;
-        };
-        setDisabled('new', this.busy);
-        setDisabled('saveas', this.busy);
-        setDisabled('reload', this.busy || !hasCurrent);
-        setDisabled('rename', this.busy || !hasCurrent);
-        setDisabled('star', this.busy || !hasCurrent);
-        setDisabled('organize', this.busy || !hasCurrent);
-        setDisabled('loadpart', this.busy || !hasAny);
-        setDisabled('delete', this.busy || !hasCurrent);
-        toolbar.querySelector('.hartsy-workspaces-star').textContent = hasCurrent && entry.bookmarked ? 'Remove bookmark' : 'Bookmark';
-        if (!toolbar.querySelector('.hartsy-workspaces-picker-panel').hidden) {
-            this.fillPicker();
-        }
-    }
-
-    /**
-     * Returns whether a workspace matches the search text, by name or folder. Empty search matches everything.
-     * @param {Object} workspace The stored workspace.
-     * @param {string} query The lowercase search text.
-     * @returns {boolean} True if it matches.
-     */
-    matchesSearch(workspace, query) {
-        if (query == '') {
-            return true;
-        }
-        return `${workspace.name}\n${workspace.folder || ''}`.toLowerCase().includes(query);
-    }
-
-    /**
-     * Fills the picker's list: bookmarked workspaces first, then one group per folder, then unfiled ones. The search text hides non-matching workspaces, except the current one, which always stays listed.
-     */
-    fillPicker() {
-        let list = document.querySelector('.hartsy-workspaces-list');
-        if (!list) {
-            return;
-        }
-        let query = `${this.searchText}`.trim().toLowerCase();
-        let compare = (a, b) => `${a.name}`.localeCompare(`${b.name}`);
-        let shown = this.workspaces.filter(w => w.id == this.currentId || this.matchesSearch(w, query)).sort(compare);
-        list.innerHTML = '';
-        let makeItem = (id, name, current) => {
-            let item = document.createElement('button');
-            item.className = `hartsy-workspaces-item${current ? ' hartsy-workspaces-item-current' : ''}`;
-            item.dataset.id = id;
-            item.setAttribute('role', 'option');
-            item.setAttribute('aria-selected', current ? 'true' : 'false');
-            item.textContent = `${current ? '✓ ' : ''}${name}`;
-            return item;
-        };
-        let addGroup = (label, items) => {
-            if (items.length == 0) {
-                return;
-            }
-            if (label) {
-                let labelElem = document.createElement('div');
-                labelElem.className = 'hartsy-workspaces-group-label';
-                labelElem.textContent = label;
-                list.append(labelElem);
-            }
-            for (let workspace of items) {
-                list.append(makeItem(workspace.id, workspace.name, workspace.id == this.currentId));
-            }
-        };
-        if (this.currentId) {
-            list.append(makeItem('', 'No workspace (keep the current settings)', false));
-        }
-        let bookmarked = shown.filter(w => w.bookmarked);
-        let rest = shown.filter(w => !w.bookmarked);
-        // A Map, not a plain object: folder names are free text, and a name like "constructor" or "__proto__" must not collide with built-in properties.
-        let folders = new Map();
-        let unfiled = [];
-        for (let workspace of rest) {
-            let folder = `${workspace.folder || ''}`;
-            if (folder == '') {
-                unfiled.push(workspace);
-            }
-            else {
-                if (!folders.has(folder)) {
-                    folders.set(folder, []);
-                }
-                folders.get(folder).push(workspace);
-            }
-        }
-        let folderNames = Array.from(folders.keys()).sort((a, b) => a.localeCompare(b));
-        if (bookmarked.length == 0 && folderNames.length == 0) {
-            addGroup(null, unfiled);
-        }
-        else {
-            addGroup('★ Bookmarked', bookmarked);
-            for (let folder of folderNames) {
-                addGroup(folder, folders.get(folder));
-            }
-            addGroup('Unfiled', unfiled);
-        }
-        if (this.workspaces.length == 0) {
-            let hint = document.createElement('div');
-            hint.className = 'hartsy-workspaces-hint';
-            hint.textContent = 'No saved workspaces yet. Set up the Generate tab how you like it, then choose "New workspace".';
-            list.append(hint);
-        }
-        else if (query != '' && shown.filter(w => w.id != this.currentId).length == 0) {
-            let hint = document.createElement('div');
-            hint.className = 'hartsy-workspaces-hint';
-            hint.textContent = 'Nothing matches the search.';
-            list.append(hint);
-        }
     }
 
     /**
@@ -2220,7 +2038,7 @@ class HartsyWorkspacesManager {
         }
         sourceRow.append(source);
         body.append(sourceRow);
-        body.append(createDiv(null, 'hartsy-workspaces-hint', 'Only the ticked parts change. Everything else stays as it is now.'));
+        body.append(createDiv(null, 'parens', 'Only the ticked parts change. Everything else stays as it is now.'));
         let boxes = [];
         let list = createDiv(null, 'hartsy-workspaces-dialog-list');
         body.append(list);
@@ -2235,7 +2053,7 @@ class HartsyWorkspacesManager {
             label.append(box);
             label.append(document.createTextNode(` ${text}`));
             if (hint) {
-                label.append(createDiv(null, 'hartsy-workspaces-hint', hint));
+                label.append(createDiv(null, 'parens', hint));
             }
             list.append(label);
             boxes.push(box);

@@ -18,7 +18,7 @@ When the settings differ from the saved workspace, a "Modified" marker appears:
 
 ![The toolbar with unsaved changes](docs/images/toolbar-modified.png)
 
-- **Picker**: click it to open a searchable list of your workspaces, grouped by bookmark, then folder. Type to filter by name or folder, and press Enter to load the first match. Choosing a workspace replaces your current settings completely, and asks first if the current workspace has unsaved changes. "+ New workspace..." at the bottom saves the current settings under a new name.
+- **Picker**: click it to open SwarmUI's searchable list of your workspaces: bookmarked ones first, then by folder, with the folder shown beside the name. Type to filter by name or folder, and press Enter to load the first match. Choosing a workspace replaces your current settings completely, and asks first if the current workspace has unsaved changes. "+ New workspace..." at the bottom saves the current settings under a new name.
 - **Save** writes the current settings into the selected workspace (or asks for a name if none is selected). Shift+S does the same, except while you are typing in a field or a dialog or the image editor is open. If the workspace was changed elsewhere, nothing is overwritten and you are told.
 - **Modified** appears when the settings differ from the selected workspace, and goes away only after a successful save or load.
 - **...** holds everything else: Save As, Reload saved version, Rename, Bookmark, Folder, Load part of a workspace, and Delete.

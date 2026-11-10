@@ -1,140 +1,24 @@
-/* Workspaces toolbar styling. Uses Swarm theme variables so it follows the selected theme. */
-
-/* The toolbar is one row (.hartsy-workspaces-bar): picker, Save, Modified marker, "..." menu. Notices go below it. */
+/* Workspaces styling. The picker and menu are SwarmUI popovers and the partial-load dialog is a SwarmUI modal, so this only lays out the toolbar row and two notices, using theme variables. */
 .hartsy-workspaces-toolbar {
-    display: flex;
-    flex-direction: column;
-    gap: 0.4rem;
     margin-bottom: 0.5rem;
 }
 
 .hartsy-workspaces-bar {
-    position: relative;
     display: flex;
     gap: 0.4rem;
     align-items: center;
 }
 
-.hartsy-workspaces-toolbar .basic-button {
-    flex: none;
-}
-
-.hartsy-workspaces-toolbar .hartsy-workspaces-picker {
-    flex: 1 1 auto;
-    display: flex;
-    justify-content: space-between;
-    gap: 0.5rem;
-    min-width: 0;
-    text-align: left;
-}
-
-.hartsy-workspaces-picker-name {
+.hartsy-workspaces-picker {
+    flex: 1;
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-}
-
-/* Dropdown panels for the picker and the "..." menu. */
-.hartsy-workspaces-panel {
-    position: absolute;
-    top: calc(100% + 0.25rem);
-    z-index: 60;
-    display: flex;
-    flex-direction: column;
-    gap: 0.2rem;
-    padding: 0.3rem;
-    border: 1px solid var(--border-color);
-    border-radius: 0.4rem;
-    background-color: var(--background-soft);
-    color: var(--text);
-    box-shadow: 0 4px 14px color-mix(in srgb, var(--text) 25%, transparent);
-}
-
-.hartsy-workspaces-panel[hidden] {
-    display: none;
-}
-
-.hartsy-workspaces-picker-panel {
-    left: 0;
-    width: min(100%, 24rem);
-}
-
-.hartsy-workspaces-menu {
-    right: 0;
-    width: min(100%, 15rem);
-    max-height: min(55vh, 22rem);
-    overflow-y: auto;
-}
-
-.hartsy-workspaces-search {
-    width: 100%;
-    box-sizing: border-box;
-}
-
-.hartsy-workspaces-list {
-    max-height: min(50vh, 20rem);
-    overflow-y: auto;
-}
-
-.hartsy-workspaces-toolbar .hartsy-workspaces-item {
-    display: block;
-    width: 100%;
-    padding: 0.35rem 0.5rem;
-    border: none;
-    border-radius: 0.25rem;
-    background: none;
-    color: inherit;
-    font: inherit;
     text-align: left;
-    cursor: pointer;
-    overflow-wrap: anywhere;
-}
-
-.hartsy-workspaces-toolbar .hartsy-workspaces-item:hover:not(:disabled),
-.hartsy-workspaces-toolbar .hartsy-workspaces-item:focus-visible {
-    background-color: color-mix(in srgb, var(--text) 14%, transparent);
-}
-
-.hartsy-workspaces-toolbar .hartsy-workspaces-item:disabled {
-    opacity: 0.45;
-    cursor: default;
-}
-
-.hartsy-workspaces-item-current {
-    font-weight: bold;
-}
-
-.hartsy-workspaces-hint {
-    font-size: 0.85em;
-    color: var(--text-soft);
-}
-
-.hartsy-workspaces-hint {
-    padding: 0.35rem 0.5rem;
-}
-
-.hartsy-workspaces-group-label {
-    padding: 0.4rem 0.5rem 0.1rem;
-    font-size: 0.8em;
-    color: var(--text-soft);
-    text-transform: uppercase;
-    letter-spacing: 0.03em;
-}
-
-.hartsy-workspaces-separator {
-    height: 1px;
-    margin: 0.2rem 0;
-    background-color: var(--border-color);
-}
-
-.hartsy-workspaces-toolbar .hartsy-workspaces-danger {
-    color: var(--red);
 }
 
 .hartsy-workspaces-modified {
-    flex: none;
-    font-size: 0.85em;
     color: var(--emphasis);
     white-space: nowrap;
 }
@@ -143,40 +27,30 @@
     display: none;
 }
 
-/* Notice shown above the parameters when a failed restore could not put the previous settings back. */
+/* Notices: unsaved changes found after a reload (recover), and a restore that could not be undone (partial). */
+.hartsy-workspaces-recover,
 .hartsy-workspaces-partial {
     display: flex;
+    flex-wrap: wrap;
     gap: 0.5rem;
-    align-items: flex-start;
-    margin-bottom: 0.5rem;
+    align-items: center;
+    margin-top: 0.4rem;
     padding: 0.4rem 0.6rem;
     border: 1px solid var(--border-color);
-    border-radius: 0.3rem;
+    border-radius: 0.5rem;
+    background-color: var(--background-soft);
+}
+
+.hartsy-workspaces-partial {
     background-color: var(--background-danger);
-    color: var(--text);
 }
 
+.hartsy-workspaces-recover-text,
 .hartsy-workspaces-partial-text {
-    flex: 1;
-    min-width: 0;
-    overflow-wrap: anywhere;
+    flex: 1 1 12rem;
 }
 
-.hartsy-workspaces-partial-dismiss {
-    flex: none;
-    line-height: 1;
-}
-
-.hartsy-workspaces-status {
-    font-size: 0.85em;
-    color: var(--text-soft);
-    overflow-wrap: anywhere;
-}
-
-.hartsy-workspaces-status:empty {
-    display: none;
-}
-
+/* The partial-load dialog's list scrolls inside SwarmUI's modal. */
 .hartsy-workspaces-dialog-list {
     max-height: 50vh;
     overflow-y: auto;
@@ -184,26 +58,4 @@
 
 .hartsy-workspaces-dialog-item {
     display: block;
-    padding-top: 0.15rem;
-    padding-bottom: 0.15rem;
-}
-
-/* Notice offering to restore unsaved changes found after a reload or a closed tab. */
-.hartsy-workspaces-recover {
-    display: flex;
-    flex-basis: 100%;
-    flex-wrap: wrap;
-    gap: 0.5rem;
-    align-items: center;
-    padding: 0.4rem 0.6rem;
-    border: 1px solid var(--border-color);
-    border-radius: 0.3rem;
-    background-color: var(--background-soft);
-    color: var(--text);
-}
-
-.hartsy-workspaces-recover-text {
-    flex: 1 1 12rem;
-    min-width: 0;
-    overflow-wrap: anywhere;
 }
