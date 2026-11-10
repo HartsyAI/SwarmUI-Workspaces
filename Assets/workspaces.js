@@ -1492,14 +1492,15 @@ class HartsyWorkspacesManager {
                 folders.get(folder).push(workspace);
             }
         }
-        let addGroup = (label, items) => {
+        let addGroup = (label, items, showFolder) => {
             if (items.length == 0) {
                 return;
             }
             let group = document.createElement('optgroup');
             group.label = label;
             for (let workspace of items) {
-                addOption(group, workspace.id, workspace.name);
+                // The Starred group mixes folders, so show the folder there: two starred workspaces can share a name.
+                addOption(group, workspace.id, showFolder && workspace.folder ? `${workspace.name} (${workspace.folder})` : workspace.name);
             }
             select.append(group);
         };
@@ -1510,7 +1511,7 @@ class HartsyWorkspacesManager {
             }
         }
         else {
-            addGroup('Starred', starred);
+            addGroup('Starred', starred, true);
             for (let folder of folderNames) {
                 addGroup(folder, folders.get(folder));
             }
