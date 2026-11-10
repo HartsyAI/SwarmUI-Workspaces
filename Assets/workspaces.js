@@ -58,8 +58,6 @@ class HartsyWorkspacesManager {
         this.statusTimer = null;
         /** Longest workspace name, in characters. Matches the server's limit. */
         this.maxNameLength = 100;
-        /** Longest folder name, in characters. Matches the server's limit. */
-        this.maxFolderLength = 100;
         /** The SwarmUI popover (picker or menu) opened from the toolbar, or null. Its 'popover' field is null once it has closed. */
         this.activePopover = null;
         /** Pending timer for the debounced draft save, or null. */
@@ -1475,8 +1473,7 @@ class HartsyWorkspacesManager {
             + '<br>&bull; <b>Save As New Workspace</b>: copy your current settings into a new workspace, leaving the selected one as it is.'
             + '<br>&bull; <b>Reload Saved Version</b>: discard your unsaved changes and go back to the saved settings.'
             + '<br>&bull; <b>Rename Workspace</b>: change its name.'
-            + '<br>&bull; <b>Star Workspace</b>: list it at the top of the dropdown, under Starred.'
-            + '<br>&bull; <b>Set Folder</b>: file it under a folder name, so related workspaces are grouped together in the dropdown. Optional.'
+            + '<br>&bull; <b>Star Workspace</b>: mark it as a favorite, so it is listed first in the dropdown, under Starred.'
             + '<br>&bull; <b>Load Part of Workspace</b>: apply only some parts of a workspace (for example just the model, or just one group) and leave everything else as it is.'
             + '<br>&bull; <b>Delete Workspace</b>: remove the saved workspace. Your current settings stay as they are.';
     }
@@ -1575,7 +1572,6 @@ class HartsyWorkspacesManager {
             buttons.push({ key: 'Reload Saved Version', title: 'Throw away unsaved changes and load the latest saved version of this workspace', action: () => this.loadWorkspace(this.currentId) });
             buttons.push({ key: 'Rename Workspace', action: () => this.renameCurrent() });
             buttons.push({ key: entry.bookmarked ? 'Unstar Workspace' : 'Star Workspace', title: 'Starred workspaces are listed first', action: () => this.toggleBookmark() });
-            buttons.push({ key: 'Set Folder', title: 'Set this workspace\'s folder', action: () => this.editOrganization() });
         }
         if (this.workspaces.length > 0) {
             buttons.push({ key: 'Load Part of Workspace', title: 'Load only some parts of a workspace and leave everything else as it is', action: () => this.showPartialDialog() });
@@ -1587,8 +1583,8 @@ class HartsyWorkspacesManager {
     }
 
     /**
-     * Fills the picker dropdown: "No workspace", then starred workspaces, then one group per folder, then unfiled ones, and selects the current workspace.
-     * With no stars and no folders the list is flat. Folder names are free text, so groups are kept in a Map, not a plain object.
+     * Fills the picker dropdown: "No workspace", then starred workspaces under "Starred" and the rest under "Other workspaces", and selects the current workspace.
+     * With no starred workspace the list is flat.
      * @param {Element} select The picker's select element.
      */
     fillPicker(select) {
@@ -1601,48 +1597,27 @@ class HartsyWorkspacesManager {
         };
         addOption(select, '', 'No workspace');
         let sorted = this.workspaces.slice().sort((a, b) => `${a.name}`.localeCompare(`${b.name}`));
-        let starred = [];
-        let unfiled = [];
-        let folders = new Map();
-        for (let workspace of sorted) {
-            let folder = `${workspace.folder || ''}`;
-            if (workspace.bookmarked) {
-                starred.push(workspace);
-            }
-            else if (folder == '') {
-                unfiled.push(workspace);
-            }
-            else {
-                if (!folders.has(folder)) {
-                    folders.set(folder, []);
-                }
-                folders.get(folder).push(workspace);
-            }
-        }
-        let addGroup = (label, items, showFolder) => {
+        let starred = sorted.filter(workspace => workspace.bookmarked);
+        let others = sorted.filter(workspace => !workspace.bookmarked);
+        let addGroup = (label, items) => {
             if (items.length == 0) {
                 return;
             }
             let group = document.createElement('optgroup');
             group.label = label;
             for (let workspace of items) {
-                // The Starred group mixes folders, so show the folder there: two starred workspaces can share a name.
-                addOption(group, workspace.id, showFolder && workspace.folder ? `${workspace.name} (${workspace.folder})` : workspace.name);
+                addOption(group, workspace.id, workspace.name);
             }
             select.append(group);
         };
-        let folderNames = Array.from(folders.keys()).sort((a, b) => a.localeCompare(b));
-        if (starred.length == 0 && folderNames.length == 0) {
-            for (let workspace of unfiled) {
+        if (starred.length == 0) {
+            for (let workspace of others) {
                 addOption(select, workspace.id, workspace.name);
             }
         }
         else {
-            addGroup('Starred', starred, true);
-            for (let folder of folderNames) {
-                addGroup(folder, folders.get(folder));
-            }
-            addGroup('Unfiled', unfiled);
+            addGroup('Starred', starred);
+            addGroup('Other workspaces', others);
         }
         select.value = this.currentId || '';
         if (select.selectedIndex < 0) {
@@ -1670,8 +1645,8 @@ class HartsyWorkspacesManager {
     }
 
     /**
-     * Saves the current workspace's folder or bookmark. The saved settings are not touched, so unsaved changes stay unsaved.
-     * @param {Object} changes Any of { folder, bookmarked }.
+     * Saves the current workspace's star. The saved settings are not touched, so unsaved changes stay unsaved.
+     * @param {Object} changes { bookmarked }.
      */
     async updateMeta(changes) {
         let entry = this.getCurrentEntry();
@@ -1707,56 +1682,6 @@ class HartsyWorkspacesManager {
         if (entry) {
             await this.updateMeta({ bookmarked: !entry.bookmarked });
         }
-    }
-
-    /**
-     * Opens the Set Folder dialog for the current workspace: a text box that suggests the folders already in use, and accepts a new name.
-     */
-    editOrganization() {
-        let entry = this.getCurrentEntry();
-        if (this.busy || this.restoring || !entry) {
-            return;
-        }
-        let { modal, body, footer } = this.openModal('hartsy_workspaces_folder_modal', 'Set Folder', 'Folders only group workspaces in the dropdown. They do not change any settings. '
-            + 'Type a new folder name to create it, or choose one you already use. Leave the box empty to keep this workspace unfiled.');
-        body.append(createDiv(null, null, `Folder for "${escapeHtml(entry.name)}":`));
-        let input = document.createElement('input');
-        input.type = 'text';
-        input.className = 'modal_text_extra';
-        input.maxLength = this.maxFolderLength;
-        input.placeholder = 'No folder';
-        input.value = entry.folder || '';
-        input.setAttribute('list', 'hartsy_workspaces_folder_list');
-        let suggestions = document.createElement('datalist');
-        suggestions.id = 'hartsy_workspaces_folder_list';
-        let folders = new Set(this.workspaces.map(w => `${w.folder || ''}`).filter(f => f != ''));
-        for (let folder of Array.from(folders).sort((a, b) => a.localeCompare(b))) {
-            let option = document.createElement('option');
-            option.value = folder;
-            suggestions.append(option);
-        }
-        body.append(input);
-        body.append(suggestions);
-        body.append(createDiv(null, 'parens', 'Choose an existing folder from the suggestions, or type a new one.'));
-        let save = () => {
-            $(modal).modal('hide');
-            this.updateMeta({ folder: input.value.trim() });
-        };
-        input.addEventListener('keydown', event => {
-            // Enter that confirms an IME composition (for example Japanese or Chinese input) must not save the unfinished name.
-            if (event.key == 'Enter' && !event.isComposing) {
-                event.preventDefault();
-                save();
-            }
-        });
-        this.addModalButton(footer, 'Cancel', false, () => {
-            $(modal).modal('hide');
-        });
-        this.addModalButton(footer, 'Save', true, save);
-        $(modal).on('shown.bs.modal', () => {
-            input.focus();
-        });
-        $(modal).modal('show');
     }
 
     /**
@@ -1975,11 +1900,7 @@ class HartsyWorkspacesManager {
         }
         this.setBusy(true);
         try {
-            // Save As keeps the original's folder (not its bookmark); New starts unorganized.
             let request = { name: name, snapshot: snapshot };
-            if (copy && current) {
-                request.folder = current.folder || '';
-            }
             let response = await this.callApi('WorkspacesCreate', request);
             this.storeEntry(response.workspace);
             this.setCurrent(response.workspace, snapshot);
