@@ -1741,7 +1741,8 @@ class HartsyWorkspacesManager {
             this.updateMeta({ folder: input.value.trim() });
         };
         input.addEventListener('keydown', event => {
-            if (event.key == 'Enter') {
+            // Enter that confirms an IME composition (for example Japanese or Chinese input) must not save the unfinished name.
+            if (event.key == 'Enter' && !event.isComposing) {
                 event.preventDefault();
                 save();
             }
