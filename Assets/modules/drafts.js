@@ -21,6 +21,8 @@ export function DraftsMixin(Base) {
             this.draftDebounceMs = 2000;
             /** IDs of workspaces that have a draft on the server, as far as this page knows. */
             this.draftIds = new Set();
+            /** Goes up whenever this page finishes saving a draft or starts deleting one, so a draft list requested before that can be recognized as out of date. */
+            this.draftChanges = 0;
             /** IDs of workspaces whose draft was written by this page, which this page may clear when its changes are saved or discarded. */
             this.ownDrafts = new Set();
             /** IDs of workspaces with a draft save still in flight. */
@@ -75,6 +77,7 @@ export function DraftsMixin(Base) {
                             await this.callApi('WorkspacesDraftSave', { id: next.id, revision: next.revision, snapshot: next.snapshot });
                             this.draftIds.add(id);
                             this.ownDrafts.add(id);
+                            this.draftChanges++;
                         }
                         catch (error) {
                             this.setStatus(`Could not keep a draft of your unsaved changes: ${error}`);
@@ -137,6 +140,7 @@ export function DraftsMixin(Base) {
             }
             this.draftIds.delete(id);
             this.ownDrafts.delete(id);
+            this.draftChanges++;
             let previous = this.draftDeletes.get(id);
             let request = (async () => {
                 await previous;

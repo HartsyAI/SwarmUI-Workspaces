@@ -42,13 +42,21 @@ export function RecoveryMixin(Base) {
             }
             let drafts;
             try {
-                drafts = (await this.callApi('WorkspacesDraftList', {})).drafts;
+                // A list that was in flight while a draft was saved or deleted here is out of date, so ask again (a few times at most).
+                for (let attempt = 0; attempt < 3; attempt++) {
+                    let before = this.draftChanges;
+                    drafts = (await this.callApi('WorkspacesDraftList', {})).drafts;
+                    if (before == this.draftChanges) {
+                        break;
+                    }
+                }
             }
             catch (error) {
                 console.error('Workspaces: could not list drafts.', error);
                 return;
             }
-            this.draftIds = new Set(drafts.map(draft => draft.id));
+            // Drafts this page wrote are always known, whatever the list said.
+            this.draftIds = new Set([...drafts.map(draft => draft.id), ...this.ownDrafts]);
             for (let old of toolbar.querySelectorAll('.hartsy-workspaces-recover')) {
                 old.remove();
             }
