@@ -75,6 +75,10 @@ class HartsyWorkspacesManager {
         this.draftIds = new Set();
         /** IDs of workspaces whose draft was written by this page, which this page may clear when its changes are saved or discarded. */
         this.ownDrafts = new Set();
+        /** IDs of workspaces with a draft save still in flight. */
+        this.savingDrafts = new Set();
+        /** IDs whose changes were discarded or saved while a draft save was in flight, so that draft is deleted as soon as its save finishes. */
+        this.discardedWhileSaving = new Set();
         /** True once the Shift+S listener is attached. */
         this.shortcutAttached = false;
         /** Readable names for the unsupported-state IDs stored in a snapshot's 'unsupported' list. */
@@ -1395,6 +1399,7 @@ class HartsyWorkspacesManager {
      * @param {string} text The button text.
      * @param {boolean} primary True for the main (highlighted) button.
      * @param {Function} handler Called on click.
+     * @returns {Element} The button.
      */
     addModalButton(footer, text, primary, handler) {
         let button = document.createElement('button');
@@ -1403,6 +1408,7 @@ class HartsyWorkspacesManager {
         button.textContent = text;
         button.addEventListener('click', handler);
         footer.append(button);
+        return button;
     }
 
     /**
@@ -1913,15 +1919,27 @@ class HartsyWorkspacesManager {
             list.append(label);
             boxes.push(box);
         };
+        let loadButton = null;
+        let fillGeneration = 0;
         let fillParts = async () => {
+            // Each request is numbered, so a slow answer for a workspace that is no longer selected is ignored.
+            let generation = ++fillGeneration;
             list.innerHTML = '';
             boxes.length = 0;
+            if (loadButton) {
+                loadButton.disabled = true;
+            }
             let resolved;
             try {
                 resolved = await this.callApi('WorkspacesResolve', { id: source.value });
             }
             catch (error) {
-                list.append(createDiv(null, 'parens', `Could not read this workspace: ${error}`));
+                if (generation == fillGeneration) {
+                    list.append(createDiv(null, 'parens', `Could not read this workspace: ${error}`));
+                }
+                return;
+            }
+            if (generation != fillGeneration) {
                 return;
             }
             if (resolved.parts.model) {
@@ -1934,9 +1952,11 @@ class HartsyWorkspacesManager {
             if (resolved.parts.other) {
                 addRow('other', '', 'Other parameters (no group)', 0, null);
             }
+            if (loadButton) {
+                loadButton.disabled = false;
+            }
         };
         source.addEventListener('change', fillParts);
-        fillParts();
         let makeButton = (text, primary, handler) => this.addModalButton(footer, text, primary, handler);
         makeButton('Select all', false, () => {
             for (let box of boxes) {
@@ -1951,7 +1971,7 @@ class HartsyWorkspacesManager {
         makeButton('Cancel', false, () => {
             $(modal).modal('hide');
         });
-        makeButton('Load', true, () => {
+        loadButton = makeButton('Load', true, () => {
             let selection = { model: false, presets: false, other: false, groups: [] };
             for (let box of boxes) {
                 if (!box.checked) {
@@ -1968,6 +1988,7 @@ class HartsyWorkspacesManager {
             $(modal).modal('hide');
             this.partialLoad(sourceId, selection);
         });
+        fillParts();
         $(modal).modal('show');
     }
 
@@ -2075,19 +2096,28 @@ class HartsyWorkspacesManager {
         if (this.normalizeState(snapshot) == this.baseline) {
             return;
         }
+        let id = entry.id;
+        this.savingDrafts.add(id);
         try {
-            await this.callApi('WorkspacesDraftSave', { id: entry.id, revision: this.currentRevision, snapshot: snapshot });
-            this.draftIds.add(entry.id);
-            this.ownDrafts.add(entry.id);
+            await this.callApi('WorkspacesDraftSave', { id: id, revision: this.currentRevision, snapshot: snapshot });
+            this.draftIds.add(id);
+            this.ownDrafts.add(id);
         }
         catch (error) {
             this.setStatus(`Could not keep a draft of your unsaved changes: ${error}`);
+        }
+        finally {
+            this.savingDrafts.delete(id);
+            // The changes were discarded or saved while this request was in flight, so the draft it just wrote is obsolete.
+            if (this.discardedWhileSaving.delete(id)) {
+                this.deleteDraft(id);
+            }
         }
     }
 
     /**
      * Cancels any pending draft save, and deletes the drafts this page wrote for the given workspaces. Used when the settings match a workspace again or are being replaced.
-     * A draft left by an earlier page is not touched, so it can still be recovered.
+     * A draft left by an earlier page is not touched, so it can still be recovered. A draft save still in flight is deleted when it finishes.
      * @param {Array<string>} ids Workspace IDs, any of which may be null.
      */
     clearDraft(ids) {
@@ -2096,7 +2126,11 @@ class HartsyWorkspacesManager {
             this.draftTimer = null;
         }
         for (let id of ids) {
-            if (id && this.ownDrafts.has(id)) {
+            if (id && this.savingDrafts.has(id)) {
+                // A save is still in flight, and deleting now could run before it lands. It deletes its own draft when it finishes.
+                this.discardedWhileSaving.add(id);
+            }
+            else if (id && this.ownDrafts.has(id)) {
                 this.deleteDraft(id);
             }
         }
