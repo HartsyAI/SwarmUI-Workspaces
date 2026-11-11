@@ -3,10 +3,13 @@
  *
  * Public entry points (used by the toolbar):
  * - captureSnapshot(): returns a schema v1 snapshot of the current Generate tab.
- * - applySnapshot(snapshot, options): restores a snapshot (or a stored workspace entry) in a fixed order, and resolves to a result object.
- * - listWorkspaces(): fetches the user's stored workspaces from the server.
+ * - applyResolved(resolved, options): applies the response of the WorkspacesResolve API route to the Generate tab in a fixed order, and resolves to a result object.
+ * - listWorkspaces(): fetches the user's workspaces from the server.
  * - isRestoring(): true while a restore runs. Modified-state tracking and draft saving must do nothing while this is true.
  * - restoreFinishedCallbacks: functions called with each restore result, after isRestoring() is false again.
+ *
+ * Everything that is not about the Generate tab's controls is done by the server through the Workspaces API: storage, validating values against the real
+ * parameter definitions, choosing parts, checking presets, and drafts. This script captures the controls, calls the API, and applies what comes back.
  *
  * Restore results have the form { status, message, skipped, warnings }, where status is one of:
  * 'success' (everything restored), 'incomplete' (finished, but some items in 'skipped' could not be restored),
@@ -28,7 +31,7 @@ class HartsyWorkspacesManager {
         this.restoring = false;
         /** True after a failed restore could not put the previous settings back, until a later restore finishes. */
         this.partiallyRestored = false;
-        /** Functions called as callback(result) after every applySnapshot call finishes. */
+        /** Functions called as callback(result) after every applyResolved call finishes. */
         this.restoreFinishedCallbacks = [];
         /** Longest wait for the server to describe a model, in milliseconds. */
         this.modelRequestTimeoutMs = 30000;
@@ -62,30 +65,16 @@ class HartsyWorkspacesManager {
         this.activePopover = null;
         /** Pending timer for the debounced draft save, or null. */
         this.draftTimer = null;
-        /** Timer that refreshes this tab's "still open" mark, or null. */
-        this.heartbeatTimer = null;
-        /** Wait after the last change before a draft is written, in milliseconds. */
+        /** Wait after the last change before a draft is saved to the server, in milliseconds. */
         this.draftDebounceMs = 2000;
-        /** How often an open tab refreshes its "still open" mark, in milliseconds. */
-        this.heartbeatMs = 5000;
-        /** A tab whose mark is older than this counts as closed, so its draft can be recovered, in milliseconds. */
-        this.staleTabMs = 20000;
-        /** True once the recovery check for drafts left by earlier page loads has run. */
-        this.recoveryChecked = false;
-        /** ID of this browser tab, kept in session storage so a reload keeps it. Null until first needed. */
-        this.tabId = null;
         /** True once the workspace list has been fetched from the server at least once. */
         this.listLoaded = false;
-        /** Milliseconds until the soonest skipped draft's tab mark goes stale, or null when no draft was skipped. Set by findDrafts. */
-        this.nextDraftRecheckMs = null;
-        /** Pending timer that re-runs the recovery check when a skipped draft's tab mark goes stale, or null. */
-        this.recheckTimer = null;
-        /** Identifies the drafts the recovery notice currently shows, so an unchanged notice is not rebuilt. */
-        this.recoverySignature = '';
-        /** Recovered drafts that could not be written back to browser storage, kept in memory for the notice on this page. */
-        this.heldDrafts = [];
-        /** Drafts and tab marks older than this are removed from browser storage, in milliseconds. A draft holds the settings, prompts included, so it should not linger on a shared computer. */
-        this.storageMaxAgeMs = 14 * 24 * 60 * 60 * 1000;
+        /** True once the check for drafts left by an earlier page has run. */
+        this.recoveryChecked = false;
+        /** IDs of workspaces that have a draft on the server, as far as this page knows. */
+        this.draftIds = new Set();
+        /** IDs of workspaces whose draft was written by this page, which this page may clear when its changes are saved or discarded. */
+        this.ownDrafts = new Set();
         /** True once the Shift+S listener is attached. */
         this.shortcutAttached = false;
         /** Readable names for the unsupported-state IDs stored in a snapshot's 'unsupported' list. */
@@ -172,27 +161,24 @@ class HartsyWorkspacesManager {
 
     /**
      * Captures the on/off state of every toggle group in the UI, nested groups included.
-     * @returns {Object} Map of group ID to { enabled, parent }.
+     * @returns {Object} Map of group ID to { enabled }.
      */
     captureGroups() {
         let groups = {};
         for (let group of this.listToggleGroups()) {
-            groups[group.id] = {
-                enabled: this.getGroupToggle(group.id).checked,
-                parent: this.getParentGroupId(group)
-            };
+            groups[group.id] = { enabled: this.getGroupToggle(group.id).checked };
         }
         return groups;
     }
 
     /**
-     * Captures the active presets in selection order, each with a fingerprint of its definition.
-     * @returns {Array} List of { title, fingerprint }.
+     * Captures the active presets in selection order, by title. The server records each preset's current definition when the snapshot is saved.
+     * @returns {Array} List of { title }.
      */
     capturePresets() {
         let presets = [];
         for (let preset of currentPresets) {
-            presets.push({ title: preset.title, fingerprint: this.fingerprintPreset(preset) });
+            presets.push({ title: preset.title });
         }
         return presets;
     }
@@ -442,32 +428,6 @@ class HartsyWorkspacesManager {
     }
 
     /**
-     * Returns the ID of a group's direct parent group, or null for a top-level group.
-     * @param {Object} group The group definition.
-     * @returns {string} The parent ID, or null.
-     */
-    getParentGroupId(group) {
-        if (!group.parent) {
-            return null;
-        }
-        if (typeof group.parent == 'object') {
-            return group.parent.id;
-        }
-        return `${group.parent}`;
-    }
-
-    /**
-     * Fingerprints a preset's definition (its parameter map), so a restore can tell whether the preset changed since capture.
-     * @param {Object} preset The preset data.
-     * @returns {string} The fingerprint.
-     */
-    fingerprintPreset(preset) {
-        let json = this.stableStringify(preset.param_map || {});
-        let hash = (hashCode(json) || 0) >>> 0;
-        return `v1-${hash.toString(16)}-${json.length}`;
-    }
-
-    /**
      * Serializes a value as JSON with object keys sorted, so equal content always gives equal text.
      * @param {*} value The value.
      * @returns {string} The JSON text.
@@ -494,106 +454,6 @@ class HartsyWorkspacesManager {
     }
 
     /**
-     * Returns whether a value is a plain object (not null, not an array).
-     * @param {*} value The value.
-     * @returns {boolean} True for a plain object.
-     */
-    isPlainObject(value) {
-        return value != null && typeof value == 'object' && !Array.isArray(value);
-    }
-
-    /**
-     * Returns whether a stored parameter value has a type this script can restore.
-     * @param {*} value The value.
-     * @returns {boolean} True for a boolean, finite number, string, or array of strings and numbers.
-     */
-    isRestorableValue(value) {
-        if (typeof value == 'boolean' || typeof value == 'string') {
-            return true;
-        }
-        if (typeof value == 'number') {
-            return Number.isFinite(value);
-        }
-        if (Array.isArray(value)) {
-            for (let item of value) {
-                if (typeof item != 'string' && !(typeof item == 'number' && Number.isFinite(item))) {
-                    return false;
-                }
-            }
-            return true;
-        }
-        return false;
-    }
-
-    /**
-     * Checks the whole snapshot's structure before anything is changed. Extra fields (id, name, revision, timestamps) are allowed.
-     * @param {Object} snapshot The snapshot or stored workspace entry.
-     * @returns {string} A description of the first problem, or null if the snapshot is valid.
-     */
-    validateSnapshot(snapshot) {
-        if (!this.isPlainObject(snapshot)) {
-            return 'the workspace data is not an object.';
-        }
-        let version = snapshot.schemaVersion;
-        if (!Number.isInteger(version)) {
-            return "it has no 'schemaVersion'.";
-        }
-        if (version > this.schemaVersion) {
-            return `it uses schema version ${version}, which is newer than this extension supports (${this.schemaVersion}). Update the Workspaces extension to load it.`;
-        }
-        if (version != this.schemaVersion) {
-            return `it uses unknown schema version ${version}.`;
-        }
-        if (!this.isPlainObject(snapshot.values)) {
-            return "'values' is missing or is not an object.";
-        }
-        for (let id of Object.keys(snapshot.values)) {
-            let entry = snapshot.values[id];
-            if (!this.isPlainObject(entry)) {
-                return `'values.${id}' is not an object.`;
-            }
-            if (typeof entry.enabled != 'boolean') {
-                return `'values.${id}.enabled' is not a boolean.`;
-            }
-            if (!this.isRestorableValue(entry.value)) {
-                return `'values.${id}.value' is missing or has an unsupported type.`;
-            }
-        }
-        if (!this.isPlainObject(snapshot.groups)) {
-            return "'groups' is missing or is not an object.";
-        }
-        for (let id of Object.keys(snapshot.groups)) {
-            let entry = snapshot.groups[id];
-            if (!this.isPlainObject(entry)) {
-                return `'groups.${id}' is not an object.`;
-            }
-            if (typeof entry.enabled != 'boolean') {
-                return `'groups.${id}.enabled' is not a boolean.`;
-            }
-            if ('parent' in entry && entry.parent != null && typeof entry.parent != 'string') {
-                return `'groups.${id}.parent' must be a group ID or null.`;
-            }
-        }
-        if (!Array.isArray(snapshot.presets)) {
-            return "'presets' is missing or is not a list.";
-        }
-        for (let preset of snapshot.presets) {
-            if (!this.isPlainObject(preset) || typeof preset.title != 'string' || typeof preset.fingerprint != 'string') {
-                return "each entry in 'presets' needs a 'title' and a 'fingerprint'.";
-            }
-        }
-        if (!Array.isArray(snapshot.unsupported)) {
-            return "'unsupported' is missing or is not a list.";
-        }
-        for (let item of snapshot.unsupported) {
-            if (typeof item != 'string') {
-                return "each entry in 'unsupported' must be text.";
-            }
-        }
-        return null;
-    }
-
-    /**
      * Joins readable labels for a list of unsupported-state IDs.
      * @param {Array<string>} ids The IDs.
      * @returns {string} The labels, joined with commas and "and".
@@ -610,39 +470,34 @@ class HartsyWorkspacesManager {
     }
 
     /**
-     * Matches the snapshot's presets against the presets that exist now.
-     * @param {Object} snapshot A validated snapshot.
+     * Turns the server's preset statuses into what the restore needs: the preset objects to activate, in saved order, and the presets that need the user's confirmation.
+     * The server did the comparing; this only looks the presets up in the page's own preset list.
+     * @param {Object} resolved The response of WorkspacesResolve.
      * @returns {Object} { resolved: preset data in saved order (missing ones left out), issues: [{ title, problem: 'missing' | 'changed' }] }.
      */
-    checkPresets(snapshot) {
-        let resolved = [];
+    presetsFromResolved(resolved) {
+        let found = [];
         let issues = [];
-        for (let saved of snapshot.presets) {
-            let current = null;
-            for (let preset of allPresetsUnsorted || []) {
-                if (preset.title == saved.title) {
-                    current = preset;
-                    break;
-                }
-            }
-            if (!current) {
-                issues.push({ title: saved.title, problem: 'missing' });
+        for (let item of resolved.presets || []) {
+            let preset = item.status == 'missing' ? null : getPresetByTitle(item.title);
+            if (!preset) {
+                issues.push({ title: item.title, problem: 'missing' });
                 continue;
             }
-            if (this.fingerprintPreset(current) != saved.fingerprint) {
-                issues.push({ title: saved.title, problem: 'changed' });
+            if (item.status == 'changed') {
+                issues.push({ title: item.title, problem: 'changed' });
             }
-            if (!resolved.includes(current)) {
-                resolved.push(current);
+            if (!found.includes(preset)) {
+                found.push(preset);
             }
         }
-        return { resolved: resolved, issues: issues };
+        return { resolved: found, issues: issues };
     }
 
     /**
      * Asks the user whether to continue when presets are missing or changed. Uses options.confirmPresets if given, else the browser's confirm dialog.
      * @param {Array} issues The preset issues from checkPresets.
-     * @param {Object} options The applySnapshot options.
+     * @param {Object} options The applyResolved options.
      * @returns {Promise<boolean>} True only if the user chose to continue.
      */
     async confirmPresetIssues(issues, options) {
@@ -782,6 +637,10 @@ class HartsyWorkspacesManager {
             }
             let elem = this.getParamElem(param);
             let entry = snapshot.values[param.id];
+            if (!entry && snapshot.leaveAlone && snapshot.leaveAlone.has(param.id)) {
+                // The server could not use this saved value, so it was reported as skipped. Keep what the Generate tab has now.
+                continue;
+            }
             let item = { param: param, elem: elem, value: this.defaultValueFor(param, elem), enabled: false, fromSnapshot: false };
             if (entry) {
                 if (this.isMultiSelect(elem)) {
@@ -1132,15 +991,15 @@ class HartsyWorkspacesManager {
     }
 
     /**
-     * Restores a snapshot (or a stored workspace entry) into the Generate tab.
-     * Validates the whole snapshot and checks the current UI and the model before changing anything. Missing or changed presets need the user's confirmation.
+     * Applies a resolved workspace (the response of the WorkspacesResolve route) to the Generate tab.
+     * Checks the current UI and the model before changing anything. Missing or changed presets need the user's confirmation.
      * If an error happens after changes start, the previous settings are put back; if that fails too, the UI is marked partially restored.
      * Modified-state tracking and draft saving must stay idle while isRestoring() is true.
-     * @param {Object} snapshot The snapshot to restore.
+     * @param {Object} resolved The resolved workspace: { values, groups, presets, skipped, unsupported, ... }.
      * @param {Object} options Optional: { notify: false to show no messages, confirmPresets: async (issues, message) => boolean to replace the confirm dialog }.
      * @returns {Promise<Object>} The result: { status, message, skipped, warnings }.
      */
-    async applySnapshot(snapshot, options = {}) {
+    async applyResolved(resolved, options = {}) {
         let notify = options.notify != false;
         if (this.restoring) {
             return this.finishRestore(this.makeResult('refused', 'A workspace is already being loaded.'), notify);
@@ -1148,10 +1007,10 @@ class HartsyWorkspacesManager {
         this.restoring = true;
         let result;
         try {
-            result = await this.restoreSnapshot(snapshot, options);
+            result = await this.restoreResolved(resolved, options);
         }
         catch (error) {
-            // restoreSnapshot handles every error after changes start, so an error that reaches here happened before any change.
+            // restoreResolved handles every error after changes start, so an error that reaches here happened before any change.
             console.error('Workspaces: restore stopped before making changes.', error);
             result = this.makeResult('refused', `Could not load the workspace: ${error.message || error}. Nothing was changed.`);
         }
@@ -1162,28 +1021,28 @@ class HartsyWorkspacesManager {
     }
 
     /**
-     * Runs the restore steps for applySnapshot. Call only through applySnapshot, which manages the restoring flag.
-     * @param {Object} snapshot The snapshot to restore.
-     * @param {Object} options The applySnapshot options.
+     * Runs the restore steps for applyResolved. Call only through applyResolved, which manages the restoring flag.
+     * @param {Object} resolved The resolved workspace.
+     * @param {Object} options The applyResolved options.
      * @returns {Promise<Object>} The result.
      */
-    async restoreSnapshot(snapshot, options) {
+    async restoreResolved(resolved, options) {
         if (!this.isReady()) {
             return this.makeResult('refused', 'The Generate tab is not ready yet. Nothing was changed.');
         }
-        let problem = this.validateSnapshot(snapshot);
-        if (problem) {
-            return this.makeResult('refused', `This workspace cannot be loaded: ${problem} Nothing was changed.`);
-        }
         let warnings = [];
-        if (snapshot.unsupported.length > 0) {
-            warnings.push(`This workspace was saved while ${this.describeUnsupported(snapshot.unsupported)} ${snapshot.unsupported.length == 1 ? 'was' : 'were'} in use. Workspaces do not save that, so it was not restored.`);
+        if (resolved.unsupported.length > 0) {
+            warnings.push(`This workspace was saved while ${this.describeUnsupported(resolved.unsupported)} ${resolved.unsupported.length == 1 ? 'was' : 'were'} in use. Workspaces do not save that, so it was not restored.`);
         }
         let active = this.detectUnsupportedState();
         if (active.length > 0) {
             return this.makeResult('refused', `Cannot load a workspace while ${this.describeUnsupported(active)} ${active.length == 1 ? 'is' : 'are'} in use, because loading would leave ${active.length == 1 ? 'it' : 'them'} in place. Remove ${active.length == 1 ? 'it' : 'them'} first. Nothing was changed.`, [], warnings);
         }
-        let modelEntry = snapshot.values['model'];
+        let modelSkip = resolved.skipped.find(item => item.id == 'model');
+        if (modelSkip) {
+            return this.makeResult('refused', `The workspace's model is not available (${modelSkip.reason}). Nothing was changed.`, [], warnings);
+        }
+        let modelEntry = resolved.values['model'];
         let modelName = modelEntry && `${modelEntry.value}` != '' ? `${modelEntry.value}` : null;
         let modelData = null;
         if (modelName) {
@@ -1194,7 +1053,7 @@ class HartsyWorkspacesManager {
                 return this.makeResult('refused', `The workspace's model "${modelName}" is not available (${error.message}). Nothing was changed.`, [], warnings);
             }
         }
-        let presetCheck = this.checkPresets(snapshot);
+        let presetCheck = this.presetsFromResolved(resolved);
         if (presetCheck.issues.length > 0) {
             let accepted = await this.confirmPresetIssues(presetCheck.issues, options);
             if (!accepted) {
@@ -1206,8 +1065,13 @@ class HartsyWorkspacesManager {
         if (active.length > 0) {
             return this.makeResult('refused', `Cannot load a workspace while ${this.describeUnsupported(active)} ${active.length == 1 ? 'is' : 'are'} in use. Nothing was changed.`, [], warnings);
         }
-        let plan = this.buildPlan(snapshot);
+        let leaveAlone = new Set(resolved.skipped.filter(item => item.kind == 'param').map(item => item.id));
+        let plan = this.buildPlan({ values: resolved.values, groups: resolved.groups, leaveAlone: leaveAlone });
         let skipped = plan.skipped.slice();
+        for (let item of resolved.skipped) {
+            let param = item.kind == 'param' ? gen_param_types.find(type => type.id == item.id) : null;
+            this.addSkipped(skipped, { kind: item.kind == 'group' ? 'group' : 'value', id: item.id, name: param ? param.name : item.id, reason: item.reason });
+        }
         if (!modelName && getRequiredElementById('input_model').value != '') {
             // Swarm has no way to clear a model selection (directSetModel ignores an empty model), so the current model stays. Report it instead of claiming success.
             skipped.push({ kind: 'value', id: 'model', name: 'Model', reason: 'the workspace has no model selected, so the current model was kept' });
@@ -1373,7 +1237,6 @@ class HartsyWorkspacesManager {
         }
         this.attachTracking();
         this.attachShortcut();
-        this.startHeartbeat();
         this.refreshToolbar();
         this.checkRecovery();
         return toolbar;
@@ -1571,7 +1434,7 @@ class HartsyWorkspacesManager {
         if (entry) {
             buttons.push({ key: 'Reload Saved Version', title: 'Throw away unsaved changes and load the latest saved version of this workspace', action: () => this.loadWorkspace(this.currentId) });
             buttons.push({ key: 'Rename Workspace', action: () => this.renameCurrent() });
-            buttons.push({ key: entry.bookmarked ? 'Unstar Workspace' : 'Star Workspace', title: 'Starred workspaces are listed first', action: () => this.toggleBookmark() });
+            buttons.push({ key: entry.starred ? 'Unstar Workspace' : 'Star Workspace', title: 'Starred workspaces are listed first', action: () => this.toggleStar() });
         }
         if (this.workspaces.length > 0) {
             buttons.push({ key: 'Load Part of Workspace', title: 'Load only some parts of a workspace and leave everything else as it is', action: () => this.showPartialDialog() });
@@ -1597,8 +1460,8 @@ class HartsyWorkspacesManager {
         };
         addOption(select, '', 'No workspace');
         let sorted = this.workspaces.slice().sort((a, b) => `${a.name}`.localeCompare(`${b.name}`));
-        let starred = sorted.filter(workspace => workspace.bookmarked);
-        let others = sorted.filter(workspace => !workspace.bookmarked);
+        let starred = sorted.filter(workspace => workspace.starred);
+        let others = sorted.filter(workspace => !workspace.starred);
         let addGroup = (label, items) => {
             if (items.length == 0) {
                 return;
@@ -1645,17 +1508,16 @@ class HartsyWorkspacesManager {
     }
 
     /**
-     * Saves the current workspace's star. The saved settings are not touched, so unsaved changes stay unsaved.
-     * @param {Object} changes { bookmarked }.
+     * Stars or unstars the current workspace. The saved settings are not touched, so unsaved changes stay unsaved.
      */
-    async updateMeta(changes) {
+    async toggleStar() {
         let entry = this.getCurrentEntry();
         if (this.busy || this.restoring || !entry) {
             return;
         }
         this.setBusy(true);
         try {
-            let response = await this.callApi('WorkspacesSetMeta', { id: entry.id, revision: this.currentRevision, ...changes });
+            let response = await this.callApi('WorkspacesStar', { id: entry.id, revision: this.currentRevision, starred: !entry.starred });
             this.currentRevision = response.revision;
             try {
                 // Take the stored values back, so the list shows exactly what the server kept.
@@ -1663,7 +1525,8 @@ class HartsyWorkspacesManager {
             }
             catch (error) {
                 console.error('Workspaces: could not refresh the list after a change.', error);
-                Object.assign(entry, changes, { revision: response.revision });
+                entry.starred = !entry.starred;
+                entry.revision = response.revision;
             }
         }
         catch (error) {
@@ -1671,16 +1534,6 @@ class HartsyWorkspacesManager {
         }
         finally {
             this.setBusy(false);
-        }
-    }
-
-    /**
-     * Toggles the current workspace's bookmark.
-     */
-    async toggleBookmark() {
-        let entry = this.getCurrentEntry();
-        if (entry) {
-            await this.updateMeta({ bookmarked: !entry.bookmarked });
         }
     }
 
@@ -1733,11 +1586,12 @@ class HartsyWorkspacesManager {
      * @param {Object} snapshot Optional: the snapshot that was saved, used as the baseline instead of re-capturing.
      */
     setCurrent(entry, snapshot = null) {
+        let previousId = this.currentId;
         this.currentId = entry.id;
         this.currentRevision = entry.revision;
         this.baseline = this.normalizeState(snapshot || this.captureSnapshot());
         this.modified = false;
-        this.clearDraft();
+        this.clearDraft([previousId, entry.id]);
         this.refreshToolbar();
     }
 
@@ -1745,11 +1599,12 @@ class HartsyWorkspacesManager {
      * Detaches the toolbar from any workspace. The Generate tab keeps its settings.
      */
     detach() {
+        let previousId = this.currentId;
         this.currentId = null;
         this.currentRevision = null;
         this.baseline = null;
         this.modified = false;
-        this.clearDraft();
+        this.clearDraft([previousId]);
         this.refreshToolbar();
     }
 
@@ -1806,23 +1661,27 @@ class HartsyWorkspacesManager {
         }
         this.setBusy(true);
         try {
+            let resolved;
             try {
-                await this.listWorkspaces();
+                resolved = await this.callApi('WorkspacesResolve', { id: id });
             }
             catch (error) {
-                console.error('Workspaces: could not refresh the list before loading; using the cached list.', error);
-            }
-            let entry = this.workspaces.find(w => w.id == id);
-            if (!entry) {
-                showError('That workspace no longer exists. The list was refreshed.');
-                if (this.currentId == id) {
+                showError(`Could not load the workspace: ${error}`);
+                try {
+                    await this.listWorkspaces();
+                }
+                catch (listError) {
+                    console.error('Workspaces: could not refresh the list after a failed load.', listError);
+                }
+                if (this.currentId && !this.getCurrentEntry()) {
                     this.detach();
                 }
                 return 'failed';
             }
-            let result = await this.applySnapshot(entry);
+            let result = await this.applyResolved(resolved);
             if (result.status == 'success' || result.status == 'incomplete') {
-                this.setCurrent(entry);
+                this.storeEntry(resolved.workspace);
+                this.setCurrent(resolved.workspace);
                 return 'loaded';
             }
             return result.status == 'cancelled' ? 'cancelled' : 'failed';
@@ -1860,9 +1719,10 @@ class HartsyWorkspacesManager {
         }
         this.setBusy(true);
         try {
-            let response = await this.callApi('WorkspacesUpdate', { id: this.currentId, revision: this.currentRevision, name: entry.name, snapshot: snapshot });
+            let response = await this.callApi('WorkspacesUpdate', { id: this.currentId, revision: this.currentRevision, snapshot: snapshot });
             this.storeEntry(response.workspace);
             this.setCurrent(response.workspace, snapshot);
+            this.deleteDraft(response.workspace.id);
         }
         catch (error) {
             await this.reportFailure('save', error);
@@ -1999,113 +1859,8 @@ class HartsyWorkspacesManager {
     }
 
     /**
-     * Lists the parameter groups in the UI for the partial-load dialog, parents before their children, plus whether any parameters have no group.
-     * @returns {Object} { groups: [{ id, name, parentId, depth }], hasOther }.
-     */
-    listParamGroups() {
-        let found = {};
-        let groups = [];
-        let hasOther = false;
-        for (let param of gen_param_types) {
-            if (!this.isCapturableParam(param) || param.id == 'model') {
-                continue;
-            }
-            if (!param.group || typeof param.group != 'object') {
-                hasOther = true;
-                continue;
-            }
-            let chain = [];
-            let group = param.group;
-            while (group && typeof group == 'object') {
-                chain.push(group);
-                group = group.parent;
-            }
-            for (let item of chain.reverse()) {
-                if (!found[item.id]) {
-                    found[item.id] = true;
-                    groups.push({ id: item.id, name: item.name || item.id, parentId: this.getParentGroupId(item), depth: this.getGroupDepth(item) });
-                }
-            }
-        }
-        let ordered = [];
-        let addWithChildren = group => {
-            ordered.push(group);
-            for (let child of groups) {
-                if (child.parentId == group.id) {
-                    addWithChildren(child);
-                }
-            }
-        };
-        for (let group of groups) {
-            if (!group.parentId || !found[group.parentId]) {
-                addWithChildren(group);
-            }
-        }
-        return { groups: ordered, hasOther: hasOther };
-    }
-
-    /**
-     * Builds the snapshot for a partial load: the current Generate-tab state, with only the chosen parts taken from the workspace.
-     * Loading the result with applySnapshot changes just the chosen parts. If a chosen group is switched on inside a parent group that is off and not chosen, the parent is switched on too, and a note says so.
-     * @param {Object} source The stored workspace to load from.
-     * @param {Object} selection { model, presets, other, groups: Set of group IDs }.
-     * @returns {Object} { snapshot, notes }: the merged snapshot and readable notes about extra changes.
-     */
-    buildPartialSnapshot(source, selection) {
-        let current = this.captureSnapshot();
-        let merged = { schemaVersion: current.schemaVersion, values: current.values, groups: current.groups, presets: current.presets, unsupported: source.unsupported.slice() };
-        let notes = [];
-        for (let param of gen_param_types) {
-            if (!this.isCapturableParam(param) || !source.values[param.id]) {
-                continue;
-            }
-            let chosen;
-            if (param.id == 'model') {
-                chosen = selection.model;
-            }
-            else if (param.group && typeof param.group == 'object') {
-                chosen = selection.groups.has(param.group.id);
-            }
-            else {
-                chosen = selection.other;
-            }
-            if (chosen) {
-                merged.values[param.id] = JSON.parse(JSON.stringify(source.values[param.id]));
-            }
-        }
-        for (let groupId of selection.groups) {
-            if (source.groups[groupId] && merged.groups[groupId]) {
-                merged.groups[groupId].enabled = source.groups[groupId].enabled;
-            }
-        }
-        if (selection.presets) {
-            merged.presets = JSON.parse(JSON.stringify(source.presets));
-        }
-        // Walk the real group hierarchy, not just the toggle entries: a chosen group without a toggle of its own can still sit inside a toggle group that is off.
-        let byId = {};
-        for (let group of this.listParamGroups().groups) {
-            byId[group.id] = group;
-        }
-        for (let groupId of selection.groups) {
-            if (merged.groups[groupId] && !merged.groups[groupId].enabled) {
-                continue;
-            }
-            let parentId = byId[groupId] ? byId[groupId].parentId : null;
-            let guard = 0;
-            while (parentId && guard++ < 50) {
-                let parent = merged.groups[parentId];
-                if (parent && !parent.enabled && !selection.groups.has(parentId)) {
-                    parent.enabled = true;
-                    notes.push(`"${byId[parentId] ? byId[parentId].name : parentId}" was switched on, because "${byId[groupId] ? byId[groupId].name : groupId}" is inside it.`);
-                }
-                parentId = byId[parentId] ? byId[parentId].parentId : null;
-            }
-        }
-        return { snapshot: merged, notes: notes };
-    }
-
-    /**
      * Opens the partial-load dialog, built from Swarm's standard modal markup: pick a workspace, tick the parts to load, and everything unticked stays as it is.
+     * The parts offered come from the server (what the chosen workspace contains), not from this page.
      */
     showPartialDialog() {
         if (this.busy || this.restoring) {
@@ -2118,7 +1873,6 @@ class HartsyWorkspacesManager {
         if (!this.isReady()) {
             return;
         }
-        let info = this.listParamGroups();
         let { modal, body, footer } = this.openModal('hartsy_workspaces_partial_modal', 'Load Part of Workspace', 'Loads only the parts you tick from the workspace you choose. Everything you leave unticked stays exactly as it is now. '
             + '<br><b>Model</b>: the model used by the workspace. <b>Presets</b>: which presets are active. Each group below is one group of settings, and "Other parameters" covers settings that are not in any group. '
             + '<br>Afterwards the settings count as modified, because they no longer match any single workspace.');
@@ -2157,14 +1911,30 @@ class HartsyWorkspacesManager {
             list.append(label);
             boxes.push(box);
         };
-        addRow('model', '', 'Model', 0, null);
-        addRow('presets', '', 'Presets', 0, 'The preset selection changes. Your current values in unticked groups are kept.');
-        for (let group of info.groups) {
-            addRow('group', group.id, group.name, group.depth, null);
-        }
-        if (info.hasOther) {
-            addRow('other', '', 'Other parameters (no group)', 0, null);
-        }
+        let fillParts = async () => {
+            list.innerHTML = '';
+            boxes.length = 0;
+            let resolved;
+            try {
+                resolved = await this.callApi('WorkspacesResolve', { id: source.value });
+            }
+            catch (error) {
+                list.append(createDiv(null, 'parens', `Could not read this workspace: ${error}`));
+                return;
+            }
+            if (resolved.parts.model) {
+                addRow('model', '', 'Model', 0, null);
+            }
+            addRow('presets', '', 'Presets', 0, 'The preset selection changes. Your current values in unticked groups are kept.');
+            for (let group of resolved.parts.groups) {
+                addRow('group', group.id, group.name, group.depth, null);
+            }
+            if (resolved.parts.other) {
+                addRow('other', '', 'Other parameters (no group)', 0, null);
+            }
+        };
+        source.addEventListener('change', fillParts);
+        fillParts();
         let makeButton = (text, primary, handler) => this.addModalButton(footer, text, primary, handler);
         makeButton('Select all', false, () => {
             for (let box of boxes) {
@@ -2180,13 +1950,13 @@ class HartsyWorkspacesManager {
             $(modal).modal('hide');
         });
         makeButton('Load', true, () => {
-            let selection = { model: false, presets: false, other: false, groups: new Set() };
+            let selection = { model: false, presets: false, other: false, groups: [] };
             for (let box of boxes) {
                 if (!box.checked) {
                     continue;
                 }
                 if (box.dataset.kind == 'group') {
-                    selection.groups.add(box.dataset.id);
+                    selection.groups.push(box.dataset.id);
                 }
                 else {
                     selection[box.dataset.kind] = true;
@@ -2200,47 +1970,70 @@ class HartsyWorkspacesManager {
     }
 
     /**
+     * Combines a partial resolve with the Generate tab as it is now: everything that was not chosen stays exactly as it is, so applying the result changes only the chosen parts.
+     * The server says which parent groups must be switched on for a chosen group to work; each is switched on only if it is off now, and a note says so.
+     * @param {Object} resolved The response of WorkspacesResolve for a part selection.
+     * @returns {Object} { merged, notes }: the full state to apply, and readable notes about extra changes.
+     */
+    mergeIntoCurrent(resolved) {
+        let current = this.captureSnapshot();
+        let merged = {
+            values: current.values,
+            groups: current.groups,
+            presets: resolved.presets || current.presets.map(preset => ({ title: preset.title, status: 'ok' })),
+            skipped: resolved.skipped,
+            unsupported: resolved.unsupported
+        };
+        Object.assign(merged.values, resolved.values);
+        for (let id of Object.keys(resolved.groups)) {
+            if (merged.groups[id]) {
+                merged.groups[id].enabled = resolved.groups[id].enabled;
+            }
+        }
+        let notes = [];
+        for (let parent of resolved.enable_groups) {
+            if (merged.groups[parent.id] && !merged.groups[parent.id].enabled) {
+                merged.groups[parent.id].enabled = true;
+                notes.push(`"${parent.name}" was switched on, because "${parent.because.name}" is inside it.`);
+            }
+        }
+        return { merged: merged, notes: notes };
+    }
+
+    /**
      * Loads the chosen parts of a workspace into the Generate tab. The current workspace and its baseline stay as they are, so the result shows as modified.
      * @param {string} sourceId The workspace to load from.
-     * @param {Object} selection The chosen parts: { model, presets, other, groups: Set of group IDs }.
+     * @param {Object} selection The chosen parts: { model, presets, other, groups: [group IDs] }.
      */
     async partialLoad(sourceId, selection) {
         if (this.busy || this.restoring) {
             return;
         }
-        if (!selection.model && !selection.presets && !selection.other && selection.groups.size == 0) {
+        if (!selection.model && !selection.presets && !selection.other && selection.groups.length == 0) {
             showError('Nothing was ticked, so nothing was loaded.');
             return;
         }
         this.setBusy(true);
         try {
+            let resolved;
             try {
-                await this.listWorkspaces();
+                resolved = await this.callApi('WorkspacesResolve', { id: sourceId, parts: selection });
             }
             catch (error) {
-                console.error('Workspaces: could not refresh the list before loading; using the cached list.', error);
-            }
-            let source = this.workspaces.find(w => w.id == sourceId);
-            if (!source) {
-                showError('That workspace no longer exists. The list was refreshed.');
+                showError(`Could not load the chosen parts: ${error}`);
                 return;
             }
-            let problem = this.validateSnapshot(source);
-            if (problem) {
-                showError(`This workspace cannot be loaded: ${problem}`);
-                return;
-            }
-            let built = this.buildPartialSnapshot(source, selection);
-            let result = await this.applySnapshot(built.snapshot, { notify: false });
+            let combined = this.mergeIntoCurrent(resolved);
+            let result = await this.applyResolved(combined.merged, { notify: false });
             if (result.status == 'success') {
                 result.message = 'The chosen parts were loaded.';
             }
-            for (let note of built.notes) {
+            for (let note of combined.notes) {
                 result.warnings.push(note);
             }
             this.showResult(result);
             if (result.status == 'success' || result.status == 'incomplete') {
-                this.setStatus(`Loaded the chosen parts of "${source.name}".`);
+                this.setStatus(`Loaded the chosen parts of "${resolved.workspace.name}".`);
             }
         }
         finally {
@@ -2249,183 +2042,7 @@ class HartsyWorkspacesManager {
     }
 
     /**
-     * Reads a browser-storage value. Storage can be blocked or full, so every access is guarded.
-     * @param {string} key The storage key. A null key (no known user yet) reads nothing.
-     * @returns {string} The value, or null if missing or unavailable.
-     */
-    storageGet(key) {
-        if (key == null) {
-            return null;
-        }
-        try {
-            return localStorage.getItem(key);
-        }
-        catch (error) {
-            return null;
-        }
-    }
-
-    /**
-     * Writes a browser-storage value.
-     * @param {string} key The storage key. A null key (no known user yet) stores nothing.
-     * @param {string} value The value.
-     * @returns {boolean} True if it was stored.
-     */
-    storageSet(key, value) {
-        if (key == null) {
-            return false;
-        }
-        try {
-            localStorage.setItem(key, value);
-            return true;
-        }
-        catch (error) {
-            return false;
-        }
-    }
-
-    /**
-     * Removes a browser-storage value, ignoring failures.
-     * @param {string} key The storage key. A null key removes nothing.
-     */
-    storageRemove(key) {
-        if (key == null) {
-            return;
-        }
-        try {
-            localStorage.removeItem(key);
-        }
-        catch (error) {
-            // Nothing to do: storage is unavailable.
-        }
-    }
-
-    /**
-     * Builds a storage key scoped to this server and user, so drafts from other servers or accounts never mix.
-     * @param {string} kind 'draft' or 'alive'.
-     * @param {string} tabId The tab the key belongs to.
-     * @returns {string} The key, or null while the user is not known yet (see hasUserScope).
-     */
-    scopeKey(kind, tabId) {
-        if (!this.hasUserScope()) {
-            return null;
-        }
-        return `${this.scopePrefix()}${kind}:${tabId}`;
-    }
-
-    /**
-     * Returns the storage key prefix shared by all of this server-and-user's draft and tab keys.
-     * @returns {string} The prefix.
-     */
-    scopePrefix() {
-        return `hartsy_workspaces:${location.origin}:${this.hasUserScope() ? user_id : ''}:`;
-    }
-
-    /**
-     * Returns whether SwarmUI has told this page which user it belongs to. Until it has, nothing is written to or read from browser storage,
-     * because keys without a user would be shared by every account that uses this browser.
-     * @returns {boolean} True once the user ID is known.
-     */
-    hasUserScope() {
-        return typeof user_id != 'undefined' && user_id != null && `${user_id}` != '';
-    }
-
-    /**
-     * Removes drafts and tab marks older than storageMaxAgeMs from browser storage, for every server and account that used this browser.
-     * They are this extension's own crash-recovery data, and an old one is abandoned. This tab's own entries are included: a tab restored after a long gap must not offer its old draft.
-     */
-    pruneStaleStorage() {
-        let keys = [];
-        try {
-            for (let i = 0; i < localStorage.length; i++) {
-                let key = localStorage.key(i);
-                if (key && key.startsWith('hartsy_workspaces:')) {
-                    keys.push(key);
-                }
-            }
-        }
-        catch (error) {
-            return;
-        }
-        let cutoff = Date.now() - this.storageMaxAgeMs;
-        for (let key of keys) {
-            // No exception for this tab's own entries: its tab ID survives a reload, so after a long gap its old draft would otherwise be offered for recovery. A live draft is rewritten on every change, so it is never old.
-            let stamp = 0;
-            if (key.includes(':draft:')) {
-                try {
-                    stamp = parseInt(JSON.parse(this.storageGet(key)).savedAt);
-                }
-                catch (error) {
-                    stamp = 0;
-                }
-            }
-            else if (key.includes(':alive:')) {
-                stamp = parseInt(this.storageGet(key));
-            }
-            else {
-                continue;
-            }
-            if (!(stamp > cutoff)) {
-                this.storageRemove(key);
-            }
-        }
-    }
-
-    /**
-     * Returns this tab's ID. It is kept in session storage, so a reload keeps it and a new tab gets its own.
-     * A duplicated tab copies session storage, so an ID whose tab is still marked open gets replaced.
-     * @returns {string} The tab ID.
-     */
-    getTabId() {
-        if (this.tabId) {
-            return this.tabId;
-        }
-        let id = null;
-        try {
-            id = sessionStorage.getItem('hartsy_workspaces_tab');
-        }
-        catch (error) {
-            id = null;
-        }
-        if (id) {
-            let alive = parseInt(this.storageGet(this.scopeKey('alive', id)) || '0');
-            if (Date.now() - alive < this.staleTabMs) {
-                id = null;
-            }
-        }
-        if (!id) {
-            id = typeof crypto != 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-            try {
-                sessionStorage.setItem('hartsy_workspaces_tab', id);
-            }
-            catch (error) {
-                // Session storage is blocked: the ID just lasts for this page load.
-            }
-        }
-        this.tabId = id;
-        return id;
-    }
-
-    /**
-     * Starts marking this tab as open every few seconds, so other tabs can tell a closed tab's draft from a live tab's. Safe to call repeatedly.
-     */
-    startHeartbeat() {
-        if (this.heartbeatTimer || !this.hasUserScope()) {
-            return;
-        }
-        let key = this.scopeKey('alive', this.getTabId());
-        let beat = () => {
-            this.storageSet(key, `${Date.now()}`);
-        };
-        beat();
-        this.heartbeatTimer = setInterval(beat, this.heartbeatMs);
-        window.addEventListener('pagehide', () => {
-            this.storageRemove(key);
-        });
-    }
-
-    /**
-     * Schedules a debounced save of this tab's draft: the current unsaved settings of the current workspace.
+     * Schedules a debounced save of the current workspace's draft: its unsaved settings.
      */
     scheduleDraftSave() {
         if (this.draftTimer) {
@@ -2438,11 +2055,11 @@ class HartsyWorkspacesManager {
     }
 
     /**
-     * Writes this tab's draft to browser storage, if the settings still differ from the current workspace. Other tabs' drafts are never touched.
+     * Saves the current workspace's draft on the server, if the settings still differ from the workspace.
      */
-    saveDraft() {
+    async saveDraft() {
         let entry = this.getCurrentEntry();
-        if (!entry || this.baseline == null || this.restoring || this.busy || !this.isReady() || !this.hasUserScope()) {
+        if (!entry || this.baseline == null || this.restoring || this.busy || !this.isReady()) {
             return;
         }
         let snapshot;
@@ -2456,194 +2073,80 @@ class HartsyWorkspacesManager {
         if (this.normalizeState(snapshot) == this.baseline) {
             return;
         }
-        let record = { tabId: this.getTabId(), workspaceId: entry.id, workspaceName: entry.name, revision: this.currentRevision, savedAt: Date.now(), snapshot: snapshot };
-        if (!this.storageSet(this.scopeKey('draft', this.getTabId()), JSON.stringify(record))) {
-            this.setStatus('Could not keep a draft of your unsaved changes: browser storage is full or blocked.');
+        try {
+            await this.callApi('WorkspacesDraftSave', { id: entry.id, revision: this.currentRevision, snapshot: snapshot });
+            this.draftIds.add(entry.id);
+            this.ownDrafts.add(entry.id);
+        }
+        catch (error) {
+            this.setStatus(`Could not keep a draft of your unsaved changes: ${error}`);
         }
     }
 
     /**
-     * Removes this tab's draft and cancels any pending draft save. Used whenever the settings match a workspace again.
+     * Cancels any pending draft save, and deletes the drafts this page wrote for the given workspaces. Used when the settings match a workspace again or are being replaced.
+     * A draft left by an earlier page is not touched, so it can still be recovered.
+     * @param {Array<string>} ids Workspace IDs, any of which may be null.
      */
-    clearDraft() {
+    clearDraft(ids) {
         if (this.draftTimer) {
             clearTimeout(this.draftTimer);
             this.draftTimer = null;
         }
-        if (!this.hasUserScope()) {
-            return;
-        }
-        let key = this.scopeKey('draft', this.getTabId());
-        if (this.storageGet(key) != null) {
-            this.storageRemove(key);
+        for (let id of ids) {
+            if (id && this.ownDrafts.has(id)) {
+                this.deleteDraft(id);
+            }
         }
     }
 
     /**
-     * Lists drafts that can be recovered: drafts of tabs that are no longer open, including this tab's own draft from before a reload once it has been moved aside. Newest first.
-     * @returns {Array<Object>} Draft records, each with a 'key' field naming its storage entry.
+     * Deletes a workspace's draft on the server, if this page knows of one. A failure is only logged: a leftover draft expires by itself.
+     * @param {string} id The workspace ID.
      */
-    findDrafts() {
-        if (!this.hasUserScope()) {
-            return [];
+    deleteDraft(id) {
+        if (!this.draftIds.has(id)) {
+            return;
         }
-        let prefix = this.scopePrefix();
-        let ownKey = this.scopeKey('draft', this.getTabId());
-        this.nextDraftRecheckMs = null;
-        let found = [];
-        let keys = [];
-        try {
-            for (let i = 0; i < localStorage.length; i++) {
-                let key = localStorage.key(i);
-                if (key && key.startsWith(`${prefix}draft:`)) {
-                    keys.push(key);
-                }
-            }
-        }
-        catch (error) {
-            return [];
-        }
-        for (let key of keys) {
-            let record;
-            try {
-                record = JSON.parse(this.storageGet(key));
-            }
-            catch (error) {
-                record = null;
-            }
-            if (!this.isPlainObject(record) || typeof record.tabId != 'string' || !this.isPlainObject(record.snapshot)) {
-                this.storageRemove(key);
-                continue;
-            }
-            if (key == ownKey) {
-                // This tab's live draft is never offered; a draft left before a reload was moved aside by relocateOwnDraft.
-                continue;
-            }
-            let alive = parseInt(this.storageGet(this.scopeKey('alive', record.tabId)) || '0');
-            let remaining = this.staleTabMs - (Date.now() - alive);
-            if (remaining > 0) {
-                if (this.nextDraftRecheckMs == null || remaining < this.nextDraftRecheckMs) {
-                    this.nextDraftRecheckMs = remaining;
-                }
-                continue;
-            }
-            record.key = key;
-            found.push(record);
-        }
-        for (let held of this.heldDrafts) {
-            found.push(held);
-        }
-        found.sort((a, b) => (b.savedAt || 0) - (a.savedAt || 0));
-        return found;
+        this.draftIds.delete(id);
+        this.ownDrafts.delete(id);
+        this.callApi('WorkspacesDraftDelete', { id: id }).catch(error => {
+            console.error('Workspaces: could not delete a draft.', error);
+        });
     }
 
     /**
      * Runs the recovery check once, when the toolbar and the workspace list are both ready.
      */
     checkRecovery() {
-        if (this.recoveryChecked || !this.listLoaded || !this.isReady() || !this.hasUserScope() || !document.querySelector('.hartsy-workspaces-toolbar')) {
+        if (this.recoveryChecked || !this.listLoaded || !this.isReady() || !document.querySelector('.hartsy-workspaces-toolbar')) {
             return;
         }
         this.recoveryChecked = true;
-        this.pruneStaleStorage();
-        this.relocateOwnDraft();
         this.showRecovery();
     }
 
     /**
-     * Moves the draft this tab left behind before a reload to its own storage entry, so it is offered like a closed tab's draft.
-     * Loading, saving, and modified tracking only ever touch the tab's live draft entry, so the offered copy stays intact until it is restored or discarded.
+     * Shows a notice in the toolbar for the newest draft left by an earlier page, with Restore and Discard.
      */
-    relocateOwnDraft() {
-        let ownKey = this.scopeKey('draft', this.getTabId());
-        let text = this.storageGet(ownKey);
-        if (text == null) {
-            return;
-        }
-        let record;
-        try {
-            record = JSON.parse(text);
-        }
-        catch (error) {
-            record = null;
-        }
-        if (!this.isPlainObject(record) || !this.isPlainObject(record.snapshot)) {
-            this.storageRemove(ownKey);
-            return;
-        }
-        record.tabId = `recovered-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-        let newKey = this.scopeKey('draft', record.tabId);
-        let json = JSON.stringify(record);
-        if (this.storageSet(newKey, json)) {
-            this.storageRemove(ownKey);
-            return;
-        }
-        // Storage may have room for one copy but not two, so try a real move: free the old entry first.
-        this.storageRemove(ownKey);
-        if (this.storageSet(newKey, json)) {
-            return;
-        }
-        // Still no room. Put the original back as it was, and keep the draft in memory so the notice can still offer it on this page.
-        this.storageSet(ownKey, text);
-        record.key = null;
-        // Remember the entry that still backs this draft, so Discard removes it too (unless a newer live draft has since replaced it).
-        record.backingKey = ownKey;
-        this.heldDrafts.push(record);
-    }
-
-    /**
-     * Throws away a draft the recovery notice offered: removes its stored copy, and its in-memory copy if it had to be held there.
-     * @param {Object} draft The draft record from findDrafts.
-     */
-    discardDraft(draft) {
-        if (draft.key) {
-            this.storageRemove(draft.key);
-        }
-        if (draft.backingKey) {
-            // Only remove the entry if it still holds this same draft, not a newer live draft written since.
-            let current = null;
-            try {
-                current = JSON.parse(this.storageGet(draft.backingKey));
-            }
-            catch (error) {
-                current = null;
-            }
-            if (this.isPlainObject(current) && current.savedAt == draft.savedAt) {
-                this.storageRemove(draft.backingKey);
-            }
-        }
-        this.heldDrafts = this.heldDrafts.filter(d => d != draft);
-    }
-
-    /**
-     * Shows a notice in the toolbar for the newest recoverable draft, with Restore and Discard. Removes the notice when there is none.
-     */
-    showRecovery() {
+    async showRecovery() {
         let toolbar = document.querySelector('.hartsy-workspaces-toolbar');
         if (!toolbar) {
             return;
         }
-        let drafts = this.findDrafts();
-        // A draft whose tab still looks open (for example one that crashed moments ago) is skipped for now. Look again once its mark goes stale.
-        if (this.recheckTimer) {
-            clearTimeout(this.recheckTimer);
-            this.recheckTimer = null;
+        let drafts;
+        try {
+            drafts = (await this.callApi('WorkspacesDraftList', {})).drafts;
         }
-        if (this.nextDraftRecheckMs != null) {
-            this.recheckTimer = setTimeout(() => {
-                this.recheckTimer = null;
-                this.showRecovery();
-            }, this.nextDraftRecheckMs + 1000);
-        }
-        let signature = drafts.map(d => `${d.key}@${d.savedAt}`).join('|');
-        let existing = toolbar.querySelectorAll('.hartsy-workspaces-recover');
-        if (existing.length > 0 && signature == this.recoverySignature) {
+        catch (error) {
+            console.error('Workspaces: could not list drafts.', error);
             return;
         }
-        this.recoverySignature = signature;
-        for (let old of existing) {
+        this.draftIds = new Set(drafts.map(draft => draft.id));
+        for (let old of toolbar.querySelectorAll('.hartsy-workspaces-recover')) {
             old.remove();
         }
+        drafts = drafts.filter(draft => !this.ownDrafts.has(draft.id));
         if (drafts.length == 0) {
             return;
         }
@@ -2652,7 +2155,7 @@ class HartsyWorkspacesManager {
         let text = document.createElement('span');
         text.className = 'hartsy-workspaces-recover-text';
         let more = drafts.length > 1 ? ` (${drafts.length - 1} more after this)` : '';
-        text.textContent = `Unsaved changes to "${draft.workspaceName || 'a workspace'}" from ${new Date(draft.savedAt).toLocaleString()} were found${more}.`;
+        text.textContent = `Unsaved changes to "${draft.name}" from ${new Date(draft.saved_at).toLocaleString()} were found${more}.`;
         banner.append(text);
         let restore = document.createElement('button');
         restore.className = 'basic-button';
@@ -2667,7 +2170,7 @@ class HartsyWorkspacesManager {
         discard.textContent = 'Discard';
         discard.title = 'Throw those unsaved changes away.';
         discard.addEventListener('click', () => {
-            this.discardDraft(draft);
+            this.deleteDraft(draft.id);
             this.showRecovery();
         });
         banner.append(discard);
@@ -2675,37 +2178,22 @@ class HartsyWorkspacesManager {
     }
 
     /**
-     * Restores a recovered draft. If its workspace still exists, that workspace is loaded first, so the draft shows as unsaved changes to it. Named workspaces are never overwritten by recovery.
-     * @param {Object} draft The draft record from findDrafts.
+     * Restores a draft: the saved workspace is loaded first, so the draft shows as unsaved changes to it. Named workspaces are never overwritten by recovery.
+     * @param {Object} draft A draft from WorkspacesDraftList.
      */
     async recoverDraft(draft) {
         if (this.busy || this.restoring) {
             return;
         }
-        let entry = draft.workspaceId ? this.workspaces.find(w => w.id == draft.workspaceId) : null;
-        // The stored draft is a separate copy (see relocateOwnDraft), so loading, saving, and the modified tracking below can never clear it. It is removed only after the draft itself is applied.
-        let attached = false;
-        if (entry) {
-            let outcome = await this.loadWorkspace(entry.id);
-            if (outcome == 'cancelled') {
-                // The user declined, or nothing was attempted; the draft stays so it can be recovered later.
-                return;
-            }
-            if (outcome == 'failed') {
-                // The saved version cannot be loaded (for example its model was removed), but the draft may still be usable. Offer it without attaching it to the workspace.
-                if (!confirm(`The saved workspace "${entry.name}" could not be loaded (the reason was shown above). Restore the draft anyway, without attaching it to a workspace?`)) {
-                    return;
-                }
-                this.detach();
-            }
-            else {
-                attached = true;
-            }
+        let outcome = await this.loadWorkspace(draft.id);
+        if (outcome == 'cancelled') {
+            // The user declined, or nothing was attempted; the draft stays so it can be recovered later.
+            return;
         }
-        else {
-            // The draft's workspace is gone, so the recovered settings must not stay attached to whichever workspace is selected now.
-            this.updateModified();
-            if (this.currentId && this.modified && !confirm(`"${this.getCurrentEntry()?.name || 'The current workspace'}" has unsaved changes. Restore the draft and discard them?`)) {
+        let attached = outcome == 'loaded';
+        if (!attached) {
+            // The saved version cannot be loaded (for example its model was removed), but the draft may still be usable. Offer it without attaching it to the workspace.
+            if (!confirm(`The saved workspace "${draft.name}" could not be loaded (the reason was shown above). Restore the draft anyway, without attaching it to a workspace?`)) {
                 return;
             }
             this.detach();
@@ -2713,7 +2201,12 @@ class HartsyWorkspacesManager {
         let result;
         this.setBusy(true);
         try {
-            result = await this.applySnapshot(draft.snapshot);
+            let resolved = await this.callApi('WorkspacesResolve', { id: draft.id, draft: true });
+            result = await this.applyResolved(resolved);
+        }
+        catch (error) {
+            showError(`Could not restore the draft: ${error}`);
+            return;
         }
         finally {
             this.setBusy(false);
@@ -2721,19 +2214,18 @@ class HartsyWorkspacesManager {
         if (result.status != 'success' && result.status != 'incomplete') {
             return;
         }
-        this.discardDraft(draft);
-        // loadWorkspace refreshed the list, so compare with the entry and revision that were actually loaded, not the cached one from before.
-        let loaded = attached ? this.getCurrentEntry() : null;
-        if (!attached) {
-            this.setStatus(entry ? 'Restored the draft. The saved workspace could not be loaded, so these settings are not attached to it. Use Save As to keep them.' : 'Restored the draft. Its workspace no longer exists, so these settings are not attached to one. Use Save As to keep them.');
+        for (let banner of document.querySelectorAll('.hartsy-workspaces-recover')) {
+            banner.remove();
         }
-        else if (loaded && this.currentRevision != draft.revision) {
-            this.setStatus(`Restored the draft. "${loaded.name}" was saved elsewhere after this draft was made, so saving now replaces that newer version.`);
+        if (!attached) {
+            this.setStatus('Restored the draft. The saved workspace could not be loaded, so these settings are not attached to it. Use Save As to keep them.');
+        }
+        else if (this.currentRevision != draft.revision) {
+            this.setStatus(`Restored the draft. "${draft.name}" was saved elsewhere after this draft was made, so saving now replaces that newer version.`);
         }
         else {
             this.setStatus('Restored the draft.');
         }
-        this.showRecovery();
     }
 
     /**
@@ -2841,7 +2333,7 @@ class HartsyWorkspacesManager {
             this.scheduleDraftSave();
         }
         else {
-            this.clearDraft();
+            this.clearDraft([this.currentId]);
         }
         if (changed != this.modified) {
             this.modified = changed;
