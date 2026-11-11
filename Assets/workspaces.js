@@ -73,6 +73,8 @@ class HartsyWorkspacesManager {
         this.recoveryChecked = false;
         /** IDs of workspaces that have a draft on the server, as far as this page knows. */
         this.draftIds = new Set();
+        /** Goes up whenever this page finishes saving a draft or starts deleting one, so a draft list requested before that can be recognized as out of date. */
+        this.draftChanges = 0;
         /** IDs of workspaces whose draft was written by this page, which this page may clear when its changes are saved or discarded. */
         this.ownDrafts = new Set();
         /** IDs of workspaces with a draft save still in flight. */
@@ -2122,6 +2124,7 @@ class HartsyWorkspacesManager {
                         await this.callApi('WorkspacesDraftSave', { id: next.id, revision: next.revision, snapshot: next.snapshot });
                         this.draftIds.add(id);
                         this.ownDrafts.add(id);
+                        this.draftChanges++;
                     }
                     catch (error) {
                         this.setStatus(`Could not keep a draft of your unsaved changes: ${error}`);
@@ -2179,6 +2182,7 @@ class HartsyWorkspacesManager {
         }
         this.draftIds.delete(id);
         this.ownDrafts.delete(id);
+        this.draftChanges++;
         let previous = this.draftDeletes.get(id);
         let request = (async () => {
             await previous;
@@ -2217,13 +2221,21 @@ class HartsyWorkspacesManager {
         }
         let drafts;
         try {
-            drafts = (await this.callApi('WorkspacesDraftList', {})).drafts;
+            // A list that was in flight while a draft was saved or deleted here is out of date, so ask again (a few times at most).
+            for (let attempt = 0; attempt < 3; attempt++) {
+                let before = this.draftChanges;
+                drafts = (await this.callApi('WorkspacesDraftList', {})).drafts;
+                if (before == this.draftChanges) {
+                    break;
+                }
+            }
         }
         catch (error) {
             console.error('Workspaces: could not list drafts.', error);
             return;
         }
-        this.draftIds = new Set(drafts.map(draft => draft.id));
+        // Drafts this page wrote are always known, whatever the list said.
+        this.draftIds = new Set([...drafts.map(draft => draft.id), ...this.ownDrafts]);
         for (let old of toolbar.querySelectorAll('.hartsy-workspaces-recover')) {
             old.remove();
         }
