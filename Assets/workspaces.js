@@ -1722,7 +1722,9 @@ class HartsyWorkspacesManager {
             let response = await this.callApi('WorkspacesUpdate', { id: this.currentId, revision: this.currentRevision, snapshot: snapshot });
             this.storeEntry(response.workspace);
             this.setCurrent(response.workspace, snapshot);
-            this.deleteDraft(response.workspace.id);
+            // The server removes a workspace's draft when it is saved, so only this page's bookkeeping needs updating.
+            this.draftIds.delete(response.workspace.id);
+            this.ownDrafts.delete(response.workspace.id);
         }
         catch (error) {
             await this.reportFailure('save', error);

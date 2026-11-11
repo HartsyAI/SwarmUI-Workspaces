@@ -183,11 +183,13 @@ public static class WorkspaceStore
         return true;
     }
 
-    /// <summary>Validates a snapshot's structure, types, and size. Parameter values are not checked here; they are checked against the server's parameter definitions when a workspace is resolved.</summary>
-    /// <param name="raw">The snapshot token supplied by the client.</param>
+    /// <summary>Validates a snapshot's structure, types, and size, including its schema version, so a snapshot from a newer version of this extension is refused. Parameter values are not checked here; they are checked against the server's parameter definitions when a workspace is resolved.
+    /// Also used on stored workspaces and drafts before they are resolved.</summary>
+    /// <param name="raw">The snapshot token: supplied by the client, or a stored entry or draft.</param>
     /// <param name="error">Set to the error object when this returns false; null otherwise.</param>
+    /// <param name="checkSize">False to skip the size limit, for a stored entry whose other fields add a few bytes to a snapshot that was within the limit.</param>
     /// <returns>True if the snapshot is valid.</returns>
-    public static bool ValidateSnapshot(JToken raw, out JObject error)
+    public static bool ValidateSnapshot(JToken raw, out JObject error, bool checkSize = true)
     {
         error = null;
         if (raw == null || raw.Type != JTokenType.Object)
@@ -213,7 +215,7 @@ public static class WorkspaceStore
             error = Error("invalid_snapshot", $"Unknown snapshot schema version {schema}.");
             return false;
         }
-        if (Encoding.UTF8.GetByteCount(snap.ToString(Formatting.None)) > MaxSnapshotBytes)
+        if (checkSize && Encoding.UTF8.GetByteCount(snap.ToString(Formatting.None)) > MaxSnapshotBytes)
         {
             error = Error("snapshot_too_large", $"Snapshot is larger than {MaxSnapshotBytes / 1024} KB.");
             return false;
@@ -343,12 +345,12 @@ public static class WorkspaceStore
 
     /// <summary>Copies only the known snapshot fields (values, groups, presets, unsupported), so anything else in the input is dropped.</summary>
     /// <param name="source">A validated snapshot or stored entry.</param>
-    /// <returns>A new object with a deep copy of those fields and the schema version.</returns>
+    /// <returns>A new object with a deep copy of those fields and the source's schema version (the current one if it has none).</returns>
     public static JObject CopySnapshotFields(JObject source)
     {
         return new JObject()
         {
-            ["schemaVersion"] = CurrentSchemaVersion,
+            ["schemaVersion"] = source["schemaVersion"]?.DeepClone() ?? CurrentSchemaVersion,
             ["values"] = source["values"].DeepClone(),
             ["groups"] = source["groups"].DeepClone(),
             ["presets"] = source["presets"].DeepClone(),

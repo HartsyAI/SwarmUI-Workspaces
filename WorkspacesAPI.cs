@@ -85,7 +85,7 @@ public static class WorkspacesAPI
     }
 
     /// <summary>Replaces a workspace's snapshot (and optionally its name). The revision must match the stored one.</summary>
-    [API.APIDescription("Updates a workspace's snapshot, and its name if one is sent. Send 'id', 'revision' (the revision you last saw), 'snapshot', and optionally 'name'. Its star is kept. Returns the workspace with its new revision.", "\"success\": true, \"workspace\": { \"id\": \"abc123\", \"name\": \"Portrait photo\", \"revision\": 4 }")]
+    [API.APIDescription("Updates a workspace's snapshot, and its name if one is sent. Send 'id', 'revision' (the revision you last saw), 'snapshot', and optionally 'name'. Its star is kept, and its draft is removed. Returns the workspace with its new revision (and 'draft_cleared': false if the draft could not be removed).", "\"success\": true, \"workspace\": { \"id\": \"abc123\", \"name\": \"Portrait photo\", \"revision\": 4 }")]
     public static Task<JObject> WorkspacesUpdate(Session session,
         [API.APIParameter("Raw body: 'id' (string), 'revision' (int), 'snapshot' (object), and optional 'name' (string).")] JObject raw)
     {
@@ -123,7 +123,14 @@ public static class WorkspacesAPI
             {
                 return Task.FromResult(saveError);
             }
-            return Task.FromResult(new JObject() { ["success"] = true, ["workspace"] = WorkspaceStore.NetData(entry, false) });
+            JObject updated = new() { ["success"] = true, ["workspace"] = WorkspaceStore.NetData(entry, false) };
+            // Saved changes are no longer unsaved, so the draft of this workspace goes too. The workspace is already saved, so a failure here is reported, not turned into a failed save.
+            JObject drafts = WorkspaceStore.LoadDrafts(session.User);
+            if (drafts.Remove(id) && !WorkspaceStore.TrySaveDrafts(session.User, drafts, out JObject _))
+            {
+                updated["draft_cleared"] = false;
+            }
+            return Task.FromResult(updated);
         }
     }
 
@@ -210,6 +217,11 @@ public static class WorkspacesAPI
                 }
                 snapshot = (JObject)saved["snapshot"];
             }
+        }
+        // Stored data can be from a newer version of this extension (after a downgrade) or damaged, so check it like a client's snapshot before using it.
+        if (!WorkspaceStore.ValidateSnapshot(snapshot, out JObject storedError, false))
+        {
+            return Task.FromResult(storedError);
         }
         return Task.FromResult(WorkspaceResolver.Resolve(session, entry, snapshot, selection));
     }

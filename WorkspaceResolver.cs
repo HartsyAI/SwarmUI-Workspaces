@@ -127,6 +127,13 @@ public static class WorkspaceResolver
         JObject groups = new();
         JObject paramsOut = new();
         JArray skipped = new();
+        JArray enableGroups = selection.All ? new JArray() : GroupsToEnable(selection, savedGroups, knownGroups);
+        // A partial load switches some parent toggle groups on, so those count as on when deciding which parameters are ready for generation.
+        JObject effectiveGroups = (JObject)savedGroups.DeepClone();
+        foreach (JToken parent in enableGroups)
+        {
+            effectiveGroups[parent["id"].ToString()] = new JObject() { ["enabled"] = true };
+        }
         foreach (KeyValuePair<string, JToken> pair in savedValues)
         {
             string id = pair.Key;
@@ -157,7 +164,7 @@ public static class WorkspaceResolver
                 continue;
             }
             values[id] = new JObject() { ["value"] = saved["value"].DeepClone(), ["enabled"] = saved["enabled"] };
-            if (saved["enabled"].Value<bool>() && GroupsAllowParam(type.Group, savedGroups))
+            if (saved["enabled"].Value<bool>() && GroupsAllowParam(type.Group, effectiveGroups))
             {
                 paramsOut[type.ID] = normalized;
             }
@@ -179,7 +186,7 @@ public static class WorkspaceResolver
         {
             ["values"] = values,
             ["groups"] = groups,
-            ["enable_groups"] = selection.All ? new JArray() : GroupsToEnable(selection, savedGroups, knownGroups),
+            ["enable_groups"] = enableGroups,
             ["presets"] = selection.TakesPresets() ? ResolvePresets(session.User, (JArray)snapshot["presets"]) : (JToken)JValue.CreateNull(),
             ["params"] = paramsOut,
             ["skipped"] = skipped,
