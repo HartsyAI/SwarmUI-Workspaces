@@ -4,7 +4,7 @@
 import { restoreSucceeded } from './helpers.js';
 
 /** Help for the Load Part dialog's "?". */
-const PARTIAL_HELP_HTML = 'Loads only the parts you tick from the workspace you choose. Everything you leave unticked stays exactly as it is now. '
+let PARTIAL_HELP_HTML = 'Loads only the parts you tick from the workspace you choose. Everything you leave unticked stays exactly as it is now. '
     + '<br><b>Model</b>: the model used by the workspace. <b>Presets</b>: which presets are active. Each group below is one group of settings, and "Other parameters" covers settings that are not in any group. '
     + '<br>Afterwards the settings count as modified, because they no longer match any single workspace.';
 

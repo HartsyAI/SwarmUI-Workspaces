@@ -1,22 +1,7 @@
 /**
  * Workspaces: writing the Generate tab. Plans a restore against the controls that exist now, applies it in a fixed order, and rolls it back.
  */
-import { isMultiSelect, optionValues, toList, valuesEqual } from './helpers.js';
-
-/**
- * Returns the order a parameter is restored in. Resolution and LoRA values that other handlers derive from come last.
- * @param {string} paramId The parameter ID.
- * @returns {number} Lower values are restored first.
- */
-function getValueOrder(paramId) {
-    if (paramId == 'aspectratio') {
-        return 1;
-    }
-    if (paramId == 'width' || paramId == 'height' || paramId == 'loras') {
-        return 2;
-    }
-    return 0;
-}
+import { getValueOrder, isMultiSelect, optionValues, toList, valuesEqual } from './helpers.js';
 
 /**
  * Adds applying and rolling back a restore to a class.

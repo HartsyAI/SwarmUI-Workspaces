@@ -4,7 +4,7 @@
  */
 
 /** The plain-language help shown by the toolbar's "?": what a workspace is and what every control does. */
-const TOOLBAR_HELP_HTML = '<b>Workspaces</b><br>A workspace saves your whole Generate tab so you can switch setups in one step: every setting, which settings and groups are switched on, and which presets are active. '
+let TOOLBAR_HELP_HTML = '<b>Workspaces</b><br>A workspace saves your whole Generate tab so you can switch setups in one step: every setting, which settings and groups are switched on, and which presets are active. '
     + 'Choosing one replaces what you have now. It is not a merge like a preset.'
     + '<br><br><b>Dropdown</b>: choose a saved workspace to load it.'
     + '<br><b>Save</b>: store your current settings in the selected workspace. With none selected, it asks for a name and creates one. Shortcut: Shift+S.'

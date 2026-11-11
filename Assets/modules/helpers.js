@@ -3,16 +3,16 @@
  */
 
 /** Snapshot schema version this script reads and writes. */
-export const SCHEMA_VERSION = 1;
+export let SCHEMA_VERSION = 1;
 
 /** Parameter IDs never captured or restored: custom workflow data, which is outside the supported scope. */
-export const EXCLUDED_PARAM_IDS = ['comfyworkflowraw', 'comfyworkflowparammetadata', 'comfyuicustomworkflow'];
+export let EXCLUDED_PARAM_IDS = ['comfyworkflowraw', 'comfyworkflowparammetadata', 'comfyuicustomworkflow'];
 
 /** Parameter types never captured or restored: media inputs (setDirectParamValue cannot restore raw image data). */
-export const MEDIA_PARAM_TYPES = ['image', 'audio', 'video', 'image_list', 'audio_list', 'video_list'];
+export let MEDIA_PARAM_TYPES = ['image', 'audio', 'video', 'image_list', 'audio_list', 'video_list'];
 
 /** Readable names for the unsupported-state IDs stored in a snapshot's 'unsupported' list. */
-export const UNSUPPORTED_LABELS = {
+export let UNSUPPORTED_LABELS = {
     custom_workflow: 'a custom Comfy workflow',
     init_image: 'an init image',
     mask: 'a mask image',
@@ -116,4 +116,19 @@ export function makeResult(status, message, skipped = [], warnings = []) {
  */
 export function restoreSucceeded(result) {
     return result.status == 'success' || result.status == 'incomplete';
+}
+
+/**
+ * Returns the order a parameter is restored in. Resolution and LoRA values that other handlers derive from come last.
+ * @param {string} paramId The parameter ID.
+ * @returns {number} Lower values are restored first.
+ */
+export function getValueOrder(paramId) {
+    if (paramId == 'aspectratio') {
+        return 1;
+    }
+    if (paramId == 'width' || paramId == 'height' || paramId == 'loras') {
+        return 2;
+    }
+    return 0;
 }
