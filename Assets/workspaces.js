@@ -79,6 +79,12 @@ class HartsyWorkspacesManager {
         this.savingDrafts = new Set();
         /** IDs whose changes were discarded or saved while a draft save was in flight, so that draft is deleted as soon as its save finishes. */
         this.discardedWhileSaving = new Set();
+        /** The newest draft save waiting for the one in flight for the same workspace to finish, by workspace ID. Only one save per workspace runs at a time, so an older request can never land after a newer one. */
+        this.queuedDrafts = new Map();
+        /** Per workspace ID, a number that goes up whenever its changes are discarded or saved. A draft request made before that is obsolete. */
+        this.draftEpochs = new Map();
+        /** IDs of drafts already restored on this page, so they are not offered again. */
+        this.recoveredIds = new Set();
         /** True once the Shift+S listener is attached. */
         this.shortcutAttached = false;
         /** Readable names for the unsupported-state IDs stored in a snapshot's 'unsupported' list. */
@@ -2097,21 +2103,37 @@ class HartsyWorkspacesManager {
             return;
         }
         let id = entry.id;
+        let request = { id: id, revision: this.currentRevision, snapshot: snapshot, epoch: this.draftEpochs.get(id) || 0 };
+        if (this.savingDrafts.has(id)) {
+            // One save per workspace at a time. Keep only the newest snapshot, to send when the one in flight finishes.
+            this.queuedDrafts.set(id, request);
+            return;
+        }
         this.savingDrafts.add(id);
         try {
-            await this.callApi('WorkspacesDraftSave', { id: id, revision: this.currentRevision, snapshot: snapshot });
-            this.draftIds.add(id);
-            this.ownDrafts.add(id);
-        }
-        catch (error) {
-            this.setStatus(`Could not keep a draft of your unsaved changes: ${error}`);
+            let next = request;
+            while (next) {
+                try {
+                    await this.callApi('WorkspacesDraftSave', { id: next.id, revision: next.revision, snapshot: next.snapshot });
+                    this.draftIds.add(id);
+                    this.ownDrafts.add(id);
+                }
+                catch (error) {
+                    this.setStatus(`Could not keep a draft of your unsaved changes: ${error}`);
+                }
+                // The changes were discarded or saved while that request was in flight, so the draft it just wrote is obsolete. Wait for the delete before sending anything newer.
+                if (this.discardedWhileSaving.delete(id)) {
+                    await this.deleteDraft(id);
+                }
+                next = this.queuedDrafts.get(id) || null;
+                this.queuedDrafts.delete(id);
+                if (next && next.epoch != (this.draftEpochs.get(id) || 0)) {
+                    next = null;
+                }
+            }
         }
         finally {
             this.savingDrafts.delete(id);
-            // The changes were discarded or saved while this request was in flight, so the draft it just wrote is obsolete.
-            if (this.discardedWhileSaving.delete(id)) {
-                this.deleteDraft(id);
-            }
         }
     }
 
@@ -2126,6 +2148,10 @@ class HartsyWorkspacesManager {
             this.draftTimer = null;
         }
         for (let id of ids) {
+            if (id) {
+                this.draftEpochs.set(id, (this.draftEpochs.get(id) || 0) + 1);
+                this.queuedDrafts.delete(id);
+            }
             if (id && this.savingDrafts.has(id)) {
                 // A save is still in flight, and deleting now could run before it lands. It deletes its own draft when it finishes.
                 this.discardedWhileSaving.add(id);
@@ -2139,16 +2165,20 @@ class HartsyWorkspacesManager {
     /**
      * Deletes a workspace's draft on the server, if this page knows of one. A failure is only logged: a leftover draft expires by itself.
      * @param {string} id The workspace ID.
+     * @returns {Promise} Resolves when the request has finished.
      */
-    deleteDraft(id) {
+    async deleteDraft(id) {
         if (!this.draftIds.has(id)) {
             return;
         }
         this.draftIds.delete(id);
         this.ownDrafts.delete(id);
-        this.callApi('WorkspacesDraftDelete', { id: id }).catch(error => {
+        try {
+            await this.callApi('WorkspacesDraftDelete', { id: id });
+        }
+        catch (error) {
             console.error('Workspaces: could not delete a draft.', error);
-        });
+        }
     }
 
     /**
@@ -2182,7 +2212,7 @@ class HartsyWorkspacesManager {
         for (let old of toolbar.querySelectorAll('.hartsy-workspaces-recover')) {
             old.remove();
         }
-        drafts = drafts.filter(draft => !this.ownDrafts.has(draft.id));
+        drafts = drafts.filter(draft => !this.ownDrafts.has(draft.id) && !this.recoveredIds.has(draft.id));
         if (drafts.length == 0) {
             return;
         }
@@ -2250,9 +2280,9 @@ class HartsyWorkspacesManager {
         if (result.status != 'success' && result.status != 'incomplete') {
             return;
         }
-        for (let banner of document.querySelectorAll('.hartsy-workspaces-recover')) {
-            banner.remove();
-        }
+        // The restored draft stays on the server until the next save replaces it, but it is not offered again. Offer the next one, if any.
+        this.recoveredIds.add(draft.id);
+        this.showRecovery();
         if (!attached) {
             this.setStatus('Restored the draft. The saved workspace could not be loaded, so these settings are not attached to it. Use Save As to keep them.');
         }
