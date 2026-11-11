@@ -183,10 +183,10 @@ public static class WorkspacesAPI
     [API.APIDescription("Resolves a workspace, or its draft, against this server's real parameter definitions using SwarmUI's own validation. Returns 'values' and 'groups' to apply to a Generate tab (only for the chosen parts), 'enable_groups' (parent toggle groups a partial load must switch on), 'presets' with a status each ('ok', 'changed', 'missing', or 'unverified'; null if the presets were not chosen), 'params' (generation-ready: enabled values only, checked and normalized, ready to send to GenerateText2Image with 'presets'), 'skipped' (anything that could not be used, and why), 'unsupported' (state the workspace could not capture), and 'parts' (what the workspace contains, to offer a choice).", "\"workspace\": { \"id\": \"abc123\", \"name\": \"Portrait photo\", \"revision\": 3 }, \"values\": { \"steps\": { \"value\": 30, \"enabled\": true } }, \"groups\": { }, \"enable_groups\": [ ], \"presets\": [ { \"title\": \"Sharp\", \"status\": \"ok\" } ], \"params\": { \"steps\": \"30\" }, \"skipped\": [ ], \"unsupported\": [ ], \"parts\": { \"model\": true, \"presets\": true, \"other\": true, \"groups\": [ { \"id\": \"coreparameters\", \"name\": \"Core Parameters\", \"parent\": null, \"depth\": 0 } ] }")]
     public static Task<JObject> WorkspacesResolve(Session session,
         [API.APIParameter("The workspace ID.")] string id,
-        [API.APIParameter("Which parts to take, as { model: bool, presets: bool, other: bool, groups: [group IDs] }. Leave out (or send {}) to take everything.")] JObject parts = null,
-        [API.APIParameter("If true, resolve the workspace's draft (its unsaved changes) instead of its saved snapshot.")] bool draft = false)
+        [API.APIParameter("If true, resolve the workspace's draft (its unsaved changes) instead of its saved snapshot.")] bool draft = false,
+        [API.APIParameter("The request body. Its optional 'parts' key chooses which parts to take, as { model: bool, presets: bool, other: bool, groups: [group IDs] }. Leave 'parts' out to take everything.")] JObject raw = null)
     {
-        if (!WorkspaceResolver.TryParseParts(parts, out WorkspaceResolver.Selection selection, out JObject partsError))
+        if (!WorkspaceResolver.TryParseParts(raw?["parts"], out WorkspaceResolver.Selection selection, out JObject partsError))
         {
             return Task.FromResult(partsError);
         }

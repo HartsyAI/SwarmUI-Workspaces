@@ -64,19 +64,23 @@ public static class WorkspaceResolver
         }
     }
 
-    /// <summary>Reads a client's part selection. A missing selection means everything.</summary>
-    /// <param name="parts">The raw selection: optional bools 'model', 'presets', 'other', and a list of group IDs 'groups'.</param>
+    /// <summary>Reads a client's part selection. A missing selection means everything; a selection that is present means only what it names.</summary>
+    /// <param name="rawParts">The raw selection: an object with optional bools 'model', 'presets', 'other', and a list of group IDs 'groups'. Null or missing for everything.</param>
     /// <param name="selection">The parsed selection when valid.</param>
     /// <param name="error">Set to the error object when this returns false; null otherwise.</param>
     /// <returns>True if the selection is valid.</returns>
-    public static bool TryParseParts(JObject parts, out Selection selection, out JObject error)
+    public static bool TryParseParts(JToken rawParts, out Selection selection, out JObject error)
     {
         selection = new Selection();
         error = null;
-        // SwarmUI passes an empty object, not null, when a client leaves an optional object parameter out.
-        if (parts == null || !parts.HasValues)
+        if (rawParts == null || rawParts.Type == JTokenType.Null)
         {
             return true;
+        }
+        if (rawParts is not JObject parts)
+        {
+            error = WorkspaceStore.Error("invalid_parts", "'parts' must be an object.");
+            return false;
         }
         selection.All = false;
         foreach (string flag in new string[] { "model", "presets", "other" })

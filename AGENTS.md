@@ -9,11 +9,20 @@ Keep this file current: when you learn a core rule of this repo, add it, without
 Named workspaces for the SwarmUI Generate tab. A workspace is a snapshot of parameter values, per-parameter switches, parameter-group switches and active presets. Loading one replaces the current state; it is not a merge like a preset.
 
 - `Workspaces.cs`: extension entry point. Registers the script, stylesheet and API routes.
-- `WorkspacesAPI.cs`: API routes (list, create, update, rename, set meta, delete).
-- `WorkspaceStore.cs`: storage, limits, validation, per-user locking, the strict `BuildEntry` whitelist.
+- `WorkspacesAPI.cs`: the API routes (list, get, create, update, rename, star, delete, resolve, and the four draft routes). Thin: each calls helpers.
+- `WorkspaceStore.cs`: storage, limits, validation, preset fingerprints, per-user locking, the strict `BuildEntry` whitelist, `NetData` (the one response shape).
+- `WorkspaceResolver.cs`: turns a workspace (or draft) into what a client needs, using SwarmUI's own parameter and preset code.
 - `Assets/workspaces.js`: browser logic, one class `HartsyWorkspacesManager` with a global `hartsyWorkspacesManager`.
 - `Assets/workspaces.css`: styles.
 - `docs/images/`: README screenshots.
+
+## Architecture
+
+- Follow SwarmUI: C# does the heavy lifting, the JS calls API routes, and routes call helper methods that return `JObject`s. New logic goes in C# (`WorkspaceStore`, `WorkspaceResolver`) behind a route, reusing SwarmUI's existing helpers (`T2IParamTypes`, `T2IParamGroup`, `User.GetPreset`, ...), never re-implemented in JS.
+- Everything the extension does must be possible through the API alone. The only JS-only work is reading and writing the Generate tab's controls (capture, apply, Modified tracking), the toolbar and its dialogs.
+- The JS must not validate what the server validates, compute what the server computes (preset fingerprints, group membership, part selection), or store anything in the browser.
+- Add a route when the UI needs something new, and document it in the README's API section in the same PR.
+- SwarmUI binds every `JObject` route parameter to the whole request body, not to one key. For a nested object, take the body as `raw` and read the key from it (as `AddNewPreset` and `WorkspacesResolve` do).
 
 ## Authorship and commits
 
@@ -31,6 +40,7 @@ Named workspaces for the SwarmUI Generate tab. A workspace is a snapshot of para
 ## Server rules (C#)
 
 - Mostly standard C#, explicit types (no `var`), full braced blocks, `///` XML docs on every field and method. No `{ get; set; }` auto-properties for plain fields.
+- Members are `public` wherever possible, as in SwarmUI (it has almost no `private`). Do not add `private`.
 - Use FreneticUtilities helpers where SwarmUI does (`ToLowerFast`, etc.).
 - Derive the user from the session (`session.User`) on every call. Never read a user ID from the request, and never keep workspace data in static fields or caches (only the per-user lock table is static). Storage is `User.GetGenericData`/`SaveGenericData`, which are keyed by the user ID; confirm every write by reading it back, because SwarmUI skips writes silently in some cases.
 - Every read-modify-write runs under the per-user lock in `WorkspaceStore`, with revision checking (`FindChecked`, `revision_conflict`).
@@ -55,20 +65,19 @@ Named workspaces for the SwarmUI Generate tab. A workspace is a snapshot of para
 - A load that fails part-way restores the previous settings, and says so if even that fails.
 - Loading is refused, with nothing changed, while a custom workflow, init image, mask or image editor is in use, when the saved model is unavailable, or when the workspace comes from a newer schema version.
 - Saving never overwrites a workspace changed elsewhere (revision conflict). The Modified marker clears only after a successful save or load.
-- Drafts are per browser tab, are never offered while their tab is still open, and never overwrite a saved workspace.
+- Drafts live on the server, one per workspace, for 14 days. They never overwrite a saved workspace, are removed with it, are cleared when saved or discarded, and a draft left by an earlier page is offered for recovery.
 - Not saved by design: image, audio and video inputs, custom Comfy workflows, prompt attachments, image editor state.
 
 ## Documentation
 
 - The README is user-facing and must match behavior. When you change behavior, limits or the menu, update it in the same PR. Keep it short: a few sentences per topic, no history of features that were tried and removed, and install instructions that assume the extension is in SwarmUI's Extensions tab (Server > Extensions). The first thing in it is the banner image.
 - The images in `docs/images/` (banner, Load Part dialog, recovery notice) should show the extension working. Re-capture them if the UI changes noticeably.
-- The README states that there are no automated tests; update that line if tests are added.
 
 ## Stay inside SwarmUI's systems
 
 - Do not edit SwarmUI core, and do not rebuild what it already provides: use its modal markup (`modal`, `modal-dialog`, `modal-content`, shown with `$(elem).modal('show')`), its buttons, and its preset system for anything preset-like.
 - Do not register parameters or add a parallel storage system. Workspaces are the one new concept; keep it lean. Stars are the only organization feature: folders were tried and removed (SwarmUI has no folder field; its presets browser derives folders from "/" in a name), so do not add a parallel scheme. Where SwarmUI already has a convention, follow it.
-- Presets are not replaced: a workspace records which presets were active (title and fingerprint) and re-selects them on load.
+- Presets are not replaced: a workspace records which presets were active (by title) and re-selects them on load. The server records each preset's fingerprint when a workspace is saved and compares it on resolve.
 
 ## Explain every control
 
@@ -76,7 +85,6 @@ Named workspaces for the SwarmUI Generate tab. A workspace is a snapshot of para
 - When you add or change a control, update its help text, the README, and the screenshots in the same PR.
 - A bare text prompt is not enough for anything with more than one possible meaning (for example choosing between several existing items): use a dialog built with `openModal`, with an explanatory line.
 
-## Keep users separate in the browser too
+## Nothing in the browser
 
-- Browser storage keys always include the server origin and SwarmUI's `user_id`. While `user_id` is unknown the scoped key is `null` and storage is not touched, never a shared fallback key.
-- Anything kept in browser storage can hold prompts, so it must expire (drafts are pruned after 14 days) and must never be offered to a different account.
+- The extension stores nothing in browser storage. Anything that persists (workspaces, drafts) goes through the API into the user's own SwarmUI data, so it can never be shared between accounts on one browser, and it expires on the server (drafts after 14 days).
