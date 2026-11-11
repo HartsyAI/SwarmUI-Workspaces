@@ -83,6 +83,8 @@ class HartsyWorkspacesManager {
         this.queuedDrafts = new Map();
         /** Per workspace ID, a number that goes up whenever its changes are discarded or saved. A draft request made before that is obsolete. */
         this.draftEpochs = new Map();
+        /** The draft deletion most recently started for a workspace ID, so a later draft save waits for it instead of landing first and being deleted. */
+        this.draftDeletes = new Map();
         /** IDs of drafts already restored on this page, so they are not offered again. */
         this.recoveredIds = new Set();
         /** True once the Shift+S listener is attached. */
@@ -2113,13 +2115,17 @@ class HartsyWorkspacesManager {
         try {
             let next = request;
             while (next) {
-                try {
-                    await this.callApi('WorkspacesDraftSave', { id: next.id, revision: next.revision, snapshot: next.snapshot });
-                    this.draftIds.add(id);
-                    this.ownDrafts.add(id);
-                }
-                catch (error) {
-                    this.setStatus(`Could not keep a draft of your unsaved changes: ${error}`);
+                // A delete started earlier for this workspace must reach the server first, or it would remove this newer draft.
+                await this.draftDeletes.get(id);
+                if (next.epoch == (this.draftEpochs.get(id) || 0)) {
+                    try {
+                        await this.callApi('WorkspacesDraftSave', { id: next.id, revision: next.revision, snapshot: next.snapshot });
+                        this.draftIds.add(id);
+                        this.ownDrafts.add(id);
+                    }
+                    catch (error) {
+                        this.setStatus(`Could not keep a draft of your unsaved changes: ${error}`);
+                    }
                 }
                 // The changes were discarded or saved while that request was in flight, so the draft it just wrote is obsolete. Wait for the delete before sending anything newer.
                 if (this.discardedWhileSaving.delete(id)) {
@@ -2173,11 +2179,20 @@ class HartsyWorkspacesManager {
         }
         this.draftIds.delete(id);
         this.ownDrafts.delete(id);
-        try {
-            await this.callApi('WorkspacesDraftDelete', { id: id });
-        }
-        catch (error) {
-            console.error('Workspaces: could not delete a draft.', error);
+        let previous = this.draftDeletes.get(id);
+        let request = (async () => {
+            await previous;
+            try {
+                await this.callApi('WorkspacesDraftDelete', { id: id });
+            }
+            catch (error) {
+                console.error('Workspaces: could not delete a draft.', error);
+            }
+        })();
+        this.draftDeletes.set(id, request);
+        await request;
+        if (this.draftDeletes.get(id) == request) {
+            this.draftDeletes.delete(id);
         }
     }
 
@@ -2282,6 +2297,11 @@ class HartsyWorkspacesManager {
         }
         // The restored draft stays on the server until the next save replaces it, but it is not offered again. Offer the next one, if any.
         this.recoveredIds.add(draft.id);
+        if (attached) {
+            // The draft is now this page's own, so discarding the restored changes (switching workspaces, reloading the saved version) deletes it.
+            this.draftIds.add(draft.id);
+            this.ownDrafts.add(draft.id);
+        }
         this.showRecovery();
         if (!attached) {
             this.setStatus('Restored the draft. The saved workspace could not be loaded, so these settings are not attached to it. Use Save As to keep them.');
