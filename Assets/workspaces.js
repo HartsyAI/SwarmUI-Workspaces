@@ -2250,8 +2250,8 @@ class HartsyWorkspacesManager {
         discard.className = 'basic-button';
         discard.textContent = 'Discard';
         discard.title = 'Throw those unsaved changes away.';
-        discard.addEventListener('click', () => {
-            this.deleteDraft(draft.id);
+        discard.addEventListener('click', async () => {
+            await this.deleteDraft(draft.id);
             this.showRecovery();
         });
         banner.append(discard);
