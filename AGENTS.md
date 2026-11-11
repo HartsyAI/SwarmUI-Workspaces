@@ -60,8 +60,8 @@ Named workspaces for the SwarmUI Generate tab. A workspace is a snapshot of para
 
 ## Documentation
 
-- The README is user-facing and must match behavior. When you change behavior, limits or the menu, update it in the same PR.
-- Screenshots in `docs/images/` should show the extension working. Re-capture them if the UI changes noticeably.
+- The README is user-facing and must match behavior. When you change behavior, limits or the menu, update it in the same PR. Keep it short: a few sentences per topic, no history of features that were tried and removed, and install instructions that assume the extension is in SwarmUI's Extensions tab (Server > Extensions). The first thing in it is the banner image.
+- The images in `docs/images/` (banner, Load Part dialog, recovery notice) should show the extension working. Re-capture them if the UI changes noticeably.
 - The README states that there are no automated tests; update that line if tests are added.
 
 ## Stay inside SwarmUI's systems
