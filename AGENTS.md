@@ -8,11 +8,12 @@ Keep this file current: when you learn a core rule of this repo, add it, without
 
 Named workspaces for the SwarmUI Generate tab. A workspace is a snapshot of parameter values, per-parameter switches, parameter-group switches and active presets. Loading one replaces the current state; it is not a merge like a preset.
 
-- `Workspaces.cs`: extension entry point. Registers the script, stylesheet and API routes.
+- `Workspaces.cs`: extension entry point. Registers the entry script, the modules, the stylesheet and API routes.
 - `WorkspacesAPI.cs`: the API routes (list, get, create, update, rename, star, delete, resolve, and the four draft routes). Thin: each calls helpers.
 - `WorkspaceStore.cs`: storage, limits, validation, preset fingerprints, per-user locking, the strict `BuildEntry` whitelist, `NetData` (the one response shape).
 - `WorkspaceResolver.cs`: turns a workspace (or draft) into what a client needs, using SwarmUI's own parameter and preset code.
-- `Assets/workspaces.js`: browser logic, one class `HartsyWorkspacesManager` with a global `hartsyWorkspacesManager`.
+- `Assets/workspaces.js`: the classic entry script. It only imports `modules/manager.js` and hooks the manager into SwarmUI's startup.
+- `Assets/modules/`: the browser logic as ES modules. `manager.js` builds the one class `HartsyWorkspacesManager` (global `hartsyWorkspacesManager`) from one mixin per concern: `core.js` (state, API calls), `capture.js` (read the Generate tab), `apply.js` (plan and write it), `restore.js` (load a resolved workspace), `drafts.js`, `recovery.js`, `modal.js` (help popover, modal), `toolbar.js`, `tracking.js` (Modified marker, Shift+S), `actions.js` (load, save, rename, star, delete), `partial.js` (Load Part). `helpers.js` holds pure functions and constants.
 - `Assets/workspaces.css`: styles.
 - `docs/images/`: README screenshots.
 
@@ -55,7 +56,8 @@ Named workspaces for the SwarmUI Generate tab. A workspace is a snapshot of para
 - Must work on current Chrome, Firefox, Safari and on modern mobile browsers.
 - JS: `let`, never `var` or `const`; full braced blocks; `else {` on its own line, never `} else {`; `/** ... */` doc on every function; `for (...)` loops rather than `forEach`; use `Map` for user-keyed lookups.
 - CSS: almost none. Reuse SwarmUI's own components and wording: the picker is a plain `select.auto-dropdown`, menus are `AdvancedPopover`, dialogs use the standard `modal` markup, buttons are `basic-button`, soft text is `parens`, and items are "starred", not "bookmarked". No custom checkmarks, stars or arrows. Custom CSS is limited to laying out the toolbar row and two notices. Colors come only from SwarmUI theme variables, never hex, rgb or shadows. Class selectors only, never `#id`.
-- New behavior goes into `HartsyWorkspacesManager`, not free functions. Check `util.js` and `site.js` in SwarmUI for an existing helper before writing one.
+- New behavior goes into `HartsyWorkspacesManager`, as a method of the mixin for its concern (or a new mixin listed in `manager.js`), not free functions; pure helpers without `this` go in `helpers.js`. Check `util.js` and `site.js` in SwarmUI for an existing helper before writing one (`sleep`, `arraysEqual`, `createDiv`, `createSpan`, `quickAppendButton`, `modalHeader`, `escapeHtml`, ...).
+- SwarmUI loads `ScriptFiles` as classic scripts, so only `Assets/workspaces.js` is one. It `import()`s `modules/manager.js`; the modules are served as plain assets (`Workspaces.cs` adds every `Assets/modules/*.js` to `OtherAssets`), so a new module file needs no registration. Modules use relative `import` paths and reach SwarmUI's functions and globals directly. The entry registers its SwarmUI hooks at once and waits for the modules, so load order never matters.
 - SwarmUI's `triggerChangeFor` dispatches non-bubbling events, so modified tracking uses capturing document listeners. Do not switch to bubbling listeners.
 - Escape all user-provided text (`escapeHtml`) before putting it in HTML. Workspace names are user input.
 
