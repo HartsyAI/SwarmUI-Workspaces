@@ -155,9 +155,9 @@ public static class WorkspaceResolver
             }
             string savedText = ToParamString(saved["value"]);
             string normalized;
-            if (type.IgnoreIf is not null && savedText == type.IgnoreIf)
+            if (IsUnsetValue(type, savedText, session))
             {
-                // SwarmUI treats a value equal to IgnoreIf as "not set" (for example Refiner Model "(Use Base)", or an empty list of YOLO models), so it is always restorable even though ValidateParam would reject it.
+                // ValidateParam rejects these, but they mean "nothing is set", so there is nothing to validate.
                 normalized = savedText;
             }
             else
@@ -207,6 +207,21 @@ public static class WorkspaceResolver
             result["workspace"] = WorkspaceStore.NetData(entry, false);
         }
         return result;
+    }
+
+    /// <summary>Returns whether a saved value means "nothing is set", which SwarmUI's value check would reject.
+    /// That is the parameter's own <see cref="T2IParamType.IgnoreIf"/> value (for example Refiner Model "(Use Base)"), or an empty value for a dropdown that currently has no choices (for example YOLO models when none are installed, or Exact Backend ID when no backend exists).</summary>
+    /// <param name="type">The parameter's definition.</param>
+    /// <param name="savedText">The saved value as text.</param>
+    /// <param name="session">The user's session, used to list the dropdown's current choices.</param>
+    /// <returns>True if the value is "not set" and needs no validation.</returns>
+    public static bool IsUnsetValue(T2IParamType type, string savedText, Session session)
+    {
+        if (type.IgnoreIf is not null && savedText == type.IgnoreIf)
+        {
+            return true;
+        }
+        return savedText == "" && type.GetValues is not null && type.GetValues(session).Count == 0;
     }
 
     /// <summary>Returns whether a saved parameter is part of the selection.</summary>
