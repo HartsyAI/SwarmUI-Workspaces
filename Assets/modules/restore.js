@@ -171,7 +171,7 @@ export function RestoreMixin(Base) {
             let skipped = plan.skipped.slice();
             for (let item of resolved.skipped) {
                 let param = item.kind == 'param' ? gen_param_types.find(type => type.id == item.id) : null;
-                this.addSkipped(skipped, { kind: item.kind == 'group' ? 'group' : 'value', id: item.id, name: param ? param.name : item.id, reason: item.reason });
+                this.addSkipped(skipped, { kind: item.kind == 'group' ? 'group' : 'value', id: item.id, name: param ? param.name : item.id, reason: item.reason, absent: item.absent == true });
             }
             if (!modelName && getRequiredElementById('input_model').value != '') {
                 // Swarm has no way to clear a model selection (directSetModel ignores an empty model), so the current model stays. Report it instead of claiming success.
@@ -217,11 +217,21 @@ export function RestoreMixin(Base) {
                 return;
             }
             let lines = [result.message];
-            for (let entry of result.skipped.slice(0, 10)) {
+            // Items that do not exist on this server at all can number in the hundreds (an uninstalled extension). A few are listed like any other item; a large number is summarized in one line, with the full list in the browser console.
+            let absent = result.skipped.filter(entry => entry.absent);
+            let others = result.skipped.filter(entry => !entry.absent);
+            let summarize = absent.length > 10;
+            let listed = summarize ? others : result.skipped;
+            for (let entry of listed.slice(0, 10)) {
                 lines.push(`- ${entry.name}: ${entry.reason}`);
             }
-            if (result.skipped.length > 10) {
-                lines.push(`...and ${result.skipped.length - 10} more.`);
+            if (listed.length > 10) {
+                lines.push(`...and ${listed.length - 10} more.`);
+            }
+            if (summarize) {
+                let names = absent.map(entry => entry.name);
+                lines.push(`- ${absent.length} saved items do not exist on this server, for example because an extension is not installed (such as ${names.slice(0, 3).join(', ')}). The full list is in the browser console.`);
+                console.info('Workspaces: saved items that do not exist on this server:', names);
             }
             showError(lines.concat(result.warnings).join('\n'));
         }

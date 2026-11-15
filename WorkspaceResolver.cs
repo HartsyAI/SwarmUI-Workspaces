@@ -145,7 +145,7 @@ public static class WorkspaceResolver
             }
             if (!known)
             {
-                skipped.Add(Skipped(id, "param", "This parameter does not exist on this server."));
+                skipped.Add(Skipped(id, "param", "This parameter does not exist on this server.", true));
                 continue;
             }
             if (type.Permission is not null && !session.User.HasPermission(type.Permission))
@@ -153,15 +153,24 @@ public static class WorkspaceResolver
                 skipped.Add(Skipped(id, "param", "You do not have permission to use this parameter."));
                 continue;
             }
+            string savedText = ToParamString(saved["value"]);
             string normalized;
-            try
+            if (IsUnsetValue(type, savedText, session))
             {
-                normalized = T2IParamTypes.ValidateParam(type, ToParamString(saved["value"]), session);
+                // ValidateParam rejects these, but they mean "nothing is set", so there is nothing to validate.
+                normalized = savedText;
             }
-            catch (SwarmReadableErrorException ex)
+            else
             {
-                skipped.Add(Skipped(id, "param", ex.Message));
-                continue;
+                try
+                {
+                    normalized = T2IParamTypes.ValidateParam(type, savedText, session);
+                }
+                catch (SwarmReadableErrorException ex)
+                {
+                    skipped.Add(Skipped(id, "param", ex.Message));
+                    continue;
+                }
             }
             values[id] = new JObject() { ["value"] = saved["value"].DeepClone(), ["enabled"] = saved["enabled"] };
             if (saved["enabled"].Value<bool>() && GroupsAllowParam(type.Group, effectiveGroups))
@@ -177,7 +186,7 @@ public static class WorkspaceResolver
             }
             if (!knownGroups.ContainsKey(pair.Key))
             {
-                skipped.Add(Skipped(pair.Key, "group", "This group does not exist on this server."));
+                skipped.Add(Skipped(pair.Key, "group", "This group does not exist on this server.", true));
                 continue;
             }
             groups[pair.Key] = pair.Value.DeepClone();
@@ -198,6 +207,21 @@ public static class WorkspaceResolver
             result["workspace"] = WorkspaceStore.NetData(entry, false);
         }
         return result;
+    }
+
+    /// <summary>Returns whether a saved value means "nothing is set", which SwarmUI's value check would reject.
+    /// That is the parameter's own <see cref="T2IParamType.IgnoreIf"/> value (for example Refiner Model "(Use Base)"), or an empty value for a dropdown that currently has no choices (for example YOLO models when none are installed, or Exact Backend ID when no backend exists).</summary>
+    /// <param name="type">The parameter's definition.</param>
+    /// <param name="savedText">The saved value as text.</param>
+    /// <param name="session">The user's session, used to list the dropdown's current choices.</param>
+    /// <returns>True if the value is "not set" and needs no validation.</returns>
+    public static bool IsUnsetValue(T2IParamType type, string savedText, Session session)
+    {
+        if (type.IgnoreIf is not null && savedText == type.IgnoreIf)
+        {
+            return true;
+        }
+        return savedText == "" && type.GetValues is not null && type.GetValues(session).Count == 0;
     }
 
     /// <summary>Returns whether a saved parameter is part of the selection.</summary>
@@ -368,10 +392,16 @@ public static class WorkspaceResolver
     /// <param name="id">The parameter or group ID.</param>
     /// <param name="kind">'param' or 'group'.</param>
     /// <param name="reason">Why it was skipped, readable by a person.</param>
-    /// <returns>{ id, kind, reason }.</returns>
-    public static JObject Skipped(string id, string kind, string reason)
+    /// <param name="absent">True if the parameter or group does not exist on this server at all (for example it came from an extension that is not installed), so a client can summarize those together.</param>
+    /// <returns>{ id, kind, reason }, plus absent: true when it applies.</returns>
+    public static JObject Skipped(string id, string kind, string reason, bool absent = false)
     {
-        return new JObject() { ["id"] = id, ["kind"] = kind, ["reason"] = reason };
+        JObject result = new() { ["id"] = id, ["kind"] = kind, ["reason"] = reason };
+        if (absent)
+        {
+            result["absent"] = true;
+        }
+        return result;
     }
 
     /// <summary>Converts a saved parameter value to the text form SwarmUI's parameter handling expects: true or false, a number, text, or a comma-separated list.</summary>
