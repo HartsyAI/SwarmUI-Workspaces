@@ -217,17 +217,21 @@ export function RestoreMixin(Base) {
                 return;
             }
             let lines = [result.message];
-            // Items that do not exist on this server at all (an uninstalled extension can leave hundreds) are summarized in one line.
+            // Items that do not exist on this server at all can number in the hundreds (an uninstalled extension). A few are listed like any other item; a large number is summarized in one line, with the full list in the browser console.
             let absent = result.skipped.filter(entry => entry.absent);
             let others = result.skipped.filter(entry => !entry.absent);
-            for (let entry of others.slice(0, 10)) {
+            let summarize = absent.length > 10;
+            let listed = summarize ? others : result.skipped;
+            for (let entry of listed.slice(0, 10)) {
                 lines.push(`- ${entry.name}: ${entry.reason}`);
             }
-            if (others.length > 10) {
-                lines.push(`...and ${others.length - 10} more.`);
+            if (listed.length > 10) {
+                lines.push(`...and ${listed.length - 10} more.`);
             }
-            if (absent.length > 0) {
-                lines.push(`- ${absent.length} saved ${absent.length == 1 ? 'item does' : 'items do'} not exist on this server, for example because an extension is not installed.`);
+            if (summarize) {
+                let names = absent.map(entry => entry.name);
+                lines.push(`- ${absent.length} saved items do not exist on this server, for example because an extension is not installed (such as ${names.slice(0, 3).join(', ')}). The full list is in the browser console.`);
+                console.info('Workspaces: saved items that do not exist on this server:', names);
             }
             showError(lines.concat(result.warnings).join('\n'));
         }
