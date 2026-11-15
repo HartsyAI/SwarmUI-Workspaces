@@ -153,15 +153,24 @@ public static class WorkspaceResolver
                 skipped.Add(Skipped(id, "param", "You do not have permission to use this parameter."));
                 continue;
             }
+            string savedText = ToParamString(saved["value"]);
             string normalized;
-            try
+            if (type.IgnoreIf is not null && savedText == type.IgnoreIf)
             {
-                normalized = T2IParamTypes.ValidateParam(type, ToParamString(saved["value"]), session);
+                // SwarmUI treats a value equal to IgnoreIf as "not set" (for example Refiner Model "(Use Base)", or an empty list of YOLO models), so it is always restorable even though ValidateParam would reject it.
+                normalized = savedText;
             }
-            catch (SwarmReadableErrorException ex)
+            else
             {
-                skipped.Add(Skipped(id, "param", ex.Message));
-                continue;
+                try
+                {
+                    normalized = T2IParamTypes.ValidateParam(type, savedText, session);
+                }
+                catch (SwarmReadableErrorException ex)
+                {
+                    skipped.Add(Skipped(id, "param", ex.Message));
+                    continue;
+                }
             }
             values[id] = new JObject() { ["value"] = saved["value"].DeepClone(), ["enabled"] = saved["enabled"] };
             if (saved["enabled"].Value<bool>() && GroupsAllowParam(type.Group, effectiveGroups))
