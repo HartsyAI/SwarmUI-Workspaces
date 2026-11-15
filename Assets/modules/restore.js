@@ -171,7 +171,7 @@ export function RestoreMixin(Base) {
             let skipped = plan.skipped.slice();
             for (let item of resolved.skipped) {
                 let param = item.kind == 'param' ? gen_param_types.find(type => type.id == item.id) : null;
-                this.addSkipped(skipped, { kind: item.kind == 'group' ? 'group' : 'value', id: item.id, name: param ? param.name : item.id, reason: item.reason });
+                this.addSkipped(skipped, { kind: item.kind == 'group' ? 'group' : 'value', id: item.id, name: param ? param.name : item.id, reason: item.reason, absent: item.absent == true });
             }
             if (!modelName && getRequiredElementById('input_model').value != '') {
                 // Swarm has no way to clear a model selection (directSetModel ignores an empty model), so the current model stays. Report it instead of claiming success.
@@ -217,11 +217,17 @@ export function RestoreMixin(Base) {
                 return;
             }
             let lines = [result.message];
-            for (let entry of result.skipped.slice(0, 10)) {
+            // Items that do not exist on this server at all (an uninstalled extension can leave hundreds) are summarized in one line.
+            let absent = result.skipped.filter(entry => entry.absent);
+            let others = result.skipped.filter(entry => !entry.absent);
+            for (let entry of others.slice(0, 10)) {
                 lines.push(`- ${entry.name}: ${entry.reason}`);
             }
-            if (result.skipped.length > 10) {
-                lines.push(`...and ${result.skipped.length - 10} more.`);
+            if (others.length > 10) {
+                lines.push(`...and ${others.length - 10} more.`);
+            }
+            if (absent.length > 0) {
+                lines.push(`- ${absent.length} saved ${absent.length == 1 ? 'item does' : 'items do'} not exist on this server, for example because an extension is not installed.`);
             }
             showError(lines.concat(result.warnings).join('\n'));
         }
